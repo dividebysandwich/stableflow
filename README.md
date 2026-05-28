@@ -16,8 +16,7 @@ A Rust + [Leptos](https://leptos.dev) web app that sits in front of a
   individual images or a whole job as a `.zip`.
 - Single-password login (sessions persisted in SQLite) gating the externally-exposed UI.
 
-<img width="921" height="985" alt="image" src="https://github.com/user-attachments/assets/f157832f-a9bc-4a4b-919c-d26ab529d8a7" />
-
+<img width="921" height="985" alt="image" src="https://github.com/user-attachments/assets/60791ee9-a1cb-4ef1-bda1-e61791711d4b" />
 
 ## Prerequisites
 
