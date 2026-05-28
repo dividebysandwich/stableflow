@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_query_map};
 
 use crate::api::{create_job, get_form_options, get_job_params};
@@ -29,7 +30,10 @@ pub fn NewJobPage() -> impl IntoView {
 
     view! {
         <div class="page">
-            <h1>{move || if from_id.get().is_some() { "New job (from template)" } else { "New job" }}</h1>
+            <div class="page-head">
+                <h1>{move || if from_id.get().is_some() { "New job (from template)" } else { "New job" }}</h1>
+                <A href="/" attr:class="link-btn">"\u{2190} Back"</A>
+            </div>
             <Suspense fallback=|| view! { <p class="muted">"Loading options\u{2026}"</p> }>
                 {move || {
                     match (options.get(), template.get()) {

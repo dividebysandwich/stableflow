@@ -39,13 +39,12 @@ a:hover { text-decoration: underline; }
     z-index: 10;
 
     > a { font-weight: 700; font-size: 1.15rem; color: var(--text); }
-    .navlinks { display: flex; gap: 1rem; align-items: center; }
     .navlink { color: var(--text); }
 }
 
-/* Hamburger toggle — hidden on wide screens, shown on mobile. */
+/* Hamburger toggle — always the single entry point to the nav links. */
 .hamburger {
-    display: none;
+    display: flex;
     flex-direction: column;
     justify-content: center;
     gap: 4px;
@@ -67,24 +66,26 @@ a:hover { text-decoration: underline; }
 }
 .hamburger:hover { background: var(--panel-2); border-color: var(--accent); }
 
-@media (max-width: 640px) {
-    .hamburger { display: flex; }
-    .topnav { flex-wrap: wrap; }
-    .topnav .navlinks {
-        display: none;
-        flex-basis: 100%;
-        flex-direction: column;
-        align-items: stretch;
-        gap: 0.5rem;
-        margin-top: 0.7rem;
-    }
-    .topnav .navlinks.open { display: flex; }
-    .topnav .navlink {
-        padding: 0.5rem 0.2rem;
-        border-bottom: 1px solid var(--border);
-    }
-    .topnav .logout-form .link-btn { width: 100%; }
+/* Links live in a dropdown anchored to the top-right, shown only when open. */
+.navlinks {
+    display: none;
+    position: absolute;
+    top: calc(100% + 0.4rem);
+    right: 1.2rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.4rem;
+    min-width: 180px;
+    padding: 0.6rem;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
+.navlinks.open { display: flex; }
+.navlinks .navlink { padding: 0.45rem 0.5rem; border-radius: 6px; }
+.navlinks .navlink:hover { background: var(--panel-2); text-decoration: none; }
+.navlinks .logout-form .link-btn { width: 100%; }
 
 .content { max-width: 1100px; margin: 0 auto; padding: 1.2rem; }
 .page { display: flex; flex-direction: column; gap: 1rem; }
