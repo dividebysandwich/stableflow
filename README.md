@@ -4,6 +4,8 @@ A Rust + [Leptos](https://leptos.dev) web app that sits in front of a
 **Stable Diffusion Forge** instance and gives you a clean, externally-reachable UI for
 **queueing txt2img jobs** and **collecting their results**.
 
+<img width="653" height="746" alt="image" src="https://github.com/user-attachments/assets/f4dad703-580a-42bb-959d-964a6190f3e9" />
+
 - Persistent, restart-resilient job queue (one job dispatched at a time).
 - Full parameter form: diffusion model (SD / SDXL / Flux), checkpoint, sampling steps,
   CFG + distilled CFG, width/height, batch size & count, sampler, schedule type, prompt /
@@ -13,6 +15,9 @@ A Rust + [Leptos](https://leptos.dev) web app that sits in front of a
 - Local image gallery: thumbnails in the history, full per-job galleries, and downloads of
   individual images or a whole job as a `.zip`.
 - Single-password login (sessions persisted in SQLite) gating the externally-exposed UI.
+
+<img width="921" height="985" alt="image" src="https://github.com/user-attachments/assets/f157832f-a9bc-4a4b-919c-d26ab529d8a7" />
+
 
 ## Prerequisites
 
