@@ -128,6 +128,11 @@ pub struct Job {
     pub created_at: String,
     pub updated_at: String,
     pub image_count: i64,
+    /// Actual idx values of the most-recent images (newest first), for the
+    /// queue-list thumbnail strip. Real indices — not a 0..count range — so
+    /// they stay correct after individual images are deleted (which leaves
+    /// gaps in the idx sequence).
+    pub thumb_idxs: Vec<i64>,
 }
 
 /// Metadata for a single produced image.

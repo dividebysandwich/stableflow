@@ -96,13 +96,12 @@ fn job_card(
     let status = job.status;
     let label = job_label(&job);
     let status_str = status.as_str().to_string();
-    let count = job.image_count;
-    // Show the most recent images so a running job's newest results lead.
-    // Render a generous number; CSS shows as many as fit the row's width and
+    // Most-recent images, newest first (already limited to 12 by the query).
+    // Uses real idx values so it stays correct after individual deletions leave
+    // gaps in the idx sequence. CSS shows as many as fit the row's width and
     // scrolls the rest, so wide screens fill up while narrow ones stay tidy.
-    const PREVIEW: i64 = 12;
-    let thumb_start = (count - PREVIEW).max(0);
-    let has_images = count > 0;
+    let thumb_idxs = job.thumb_idxs.clone();
+    let has_images = job.image_count > 0;
 
     let can_cancel = matches!(status, JobStatus::Queued | JobStatus::Running);
     let can_requeue = matches!(
@@ -123,7 +122,7 @@ fn job_card(
 
             <Show when=move || has_images>
                 <div class="thumb-strip">
-                    {(thumb_start..count).rev().map(|idx| view! {
+                    {thumb_idxs.iter().map(|&idx| view! {
                         <a href=format!("/job/{id}") class="thumb">
                             <img src=format!("/thumb/{id}/{idx}") loading="lazy" alt=""/>
                         </a>

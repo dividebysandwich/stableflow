@@ -73,6 +73,13 @@ async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 fn row_to_job(row: &SqliteRow) -> Job {
     let params_json: String = row.get("params_json");
     let params: JobParams = serde_json::from_str(&params_json).unwrap_or_default();
+    // group_concat yields NULL for jobs with no images.
+    let thumb_idxs = row
+        .get::<Option<String>, _>("thumb_idxs")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|s| s.parse::<i64>().ok())
+        .collect();
     Job {
         id: row.get("id"),
         name: row.get("name"),
@@ -83,13 +90,20 @@ fn row_to_job(row: &SqliteRow) -> Job {
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
         image_count: row.get("image_count"),
+        thumb_idxs,
     }
 }
 
+// `thumb_idxs` is a comma-separated list of the 12 most-recent image idx
+// values (newest first) so the queue list can render thumbnails by real index
+// — robust to gaps left by deleting individual images.
 const JOB_SELECT: &str = r#"
     SELECT j.id, j.name, j.status, j.error, j.progress, j.params_json,
            j.created_at, j.updated_at,
-           (SELECT COUNT(*) FROM images i WHERE i.job_id = j.id) AS image_count
+           (SELECT COUNT(*) FROM images i WHERE i.job_id = j.id) AS image_count,
+           (SELECT group_concat(idx) FROM
+               (SELECT idx FROM images WHERE job_id = j.id ORDER BY idx DESC LIMIT 12)
+           ) AS thumb_idxs
     FROM jobs j
 "#;
 
