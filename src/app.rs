@@ -1,0 +1,73 @@
+use leptos::prelude::*;
+use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
+use leptos_router::components::{Route, Router, Routes, A};
+use leptos_router::hooks::use_location;
+use leptos_router::path;
+
+use crate::components::gallery::JobDetailPage;
+use crate::components::job_form::NewJobPage;
+use crate::components::job_list::JobsPage;
+use crate::components::login::LoginPage;
+
+/// HTML document shell used for SSR + hydration.
+pub fn shell(options: LeptosOptions) -> impl IntoView {
+    view! {
+        <!DOCTYPE html>
+        <html lang="en">
+            <head>
+                <meta charset="utf-8"/>
+                <meta name="viewport" content="width=device-width, initial-scale=1"/>
+                <AutoReload options=options.clone()/>
+                <HydrationScripts options/>
+                <MetaTags/>
+            </head>
+            <body>
+                <App/>
+            </body>
+        </html>
+    }
+}
+
+#[component]
+pub fn App() -> impl IntoView {
+    provide_meta_context();
+
+    view! {
+        <Stylesheet id="leptos" href="/pkg/stableflow.css"/>
+        <Title text="StableFlow"/>
+
+        <Router>
+            <NavBar/>
+            <main class="content">
+                <Routes fallback=|| view! { <p class="pad">"Page not found."</p> }>
+                    <Route path=path!("/") view=JobsPage/>
+                    <Route path=path!("/new") view=NewJobPage/>
+                    <Route path=path!("/job/:id") view=JobDetailPage/>
+                    <Route path=path!("/login") view=LoginPage/>
+                </Routes>
+            </main>
+        </Router>
+    }
+}
+
+/// Top navigation. Hidden on the login page (the only route reachable while
+/// unauthenticated), so the unauthenticated view shows no app links.
+#[component]
+fn NavBar() -> impl IntoView {
+    let location = use_location();
+    let show = move || location.pathname.get() != "/login";
+    view! {
+        <Show when=show>
+            <nav class="topnav">
+                <A href="/">"StableFlow"</A>
+                <div class="navlinks">
+                    <A href="/new">"+ New job"</A>
+                    <A href="/">"Queue & history"</A>
+                    <form method="post" action="/logout" class="logout-form">
+                        <button type="submit" class="link-btn">"Logout"</button>
+                    </form>
+                </div>
+            </nav>
+        </Show>
+    }
+}
