@@ -185,7 +185,7 @@ button:disabled { opacity: 0.6; cursor: default; }
     -webkit-overflow-scrolling: touch;
 }
 .thumb { flex: 0 0 auto; }
-.thumb img { height: 130px; width: auto; border-radius: 6px; border: 1px solid var(--border); display: block; }
+.thumb img { height: 260px; width: auto; border-radius: 6px; border: 1px solid var(--border); display: block; }
 
 .actions { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; font-size: 0.9rem; }
 

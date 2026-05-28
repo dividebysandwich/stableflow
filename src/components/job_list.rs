@@ -98,7 +98,10 @@ fn job_card(
     let status_str = status.as_str().to_string();
     let count = job.image_count;
     // Show the most recent images so a running job's newest results lead.
-    let thumb_start = (count - 4).max(0);
+    // Render a generous number; CSS shows as many as fit the row's width and
+    // scrolls the rest, so wide screens fill up while narrow ones stay tidy.
+    const PREVIEW: i64 = 12;
+    let thumb_start = (count - PREVIEW).max(0);
     let has_images = count > 0;
 
     let can_cancel = matches!(status, JobStatus::Queued | JobStatus::Running);
@@ -120,7 +123,7 @@ fn job_card(
 
             <Show when=move || has_images>
                 <div class="thumb-strip">
-                    {(thumb_start..count).map(|idx| view! {
+                    {(thumb_start..count).rev().map(|idx| view! {
                         <a href=format!("/job/{id}") class="thumb">
                             <img src=format!("/thumb/{id}/{idx}") loading="lazy" alt=""/>
                         </a>
