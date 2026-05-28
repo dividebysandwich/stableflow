@@ -326,6 +326,33 @@ pub async fn delete_job(pool: &SqlitePool, id: i64) -> Result<Vec<String>, sqlx:
     Ok(paths)
 }
 
+/// Delete a single image row, returning its on-disk paths so the caller can
+/// remove the files. Other images keep their `idx` (gaps are fine — serving is
+/// by idx lookup, not position), and a later re-queue still appends via
+/// [`next_image_idx`].
+pub async fn delete_image(
+    pool: &SqlitePool,
+    job_id: i64,
+    idx: i64,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows = sqlx::query("SELECT file_path, thumb_path FROM images WHERE job_id = ? AND idx = ?")
+        .bind(job_id)
+        .bind(idx)
+        .fetch_all(pool)
+        .await?;
+    let mut paths = Vec::new();
+    for r in &rows {
+        paths.push(r.get::<String, _>("file_path"));
+        paths.push(r.get::<String, _>("thumb_path"));
+    }
+    sqlx::query("DELETE FROM images WHERE job_id = ? AND idx = ?")
+        .bind(job_id)
+        .bind(idx)
+        .execute(pool)
+        .await?;
+    Ok(paths)
+}
+
 /// Next free image index for a job = max(idx) + 1 (0 if it has none). Used so a
 /// re-queued job appends new images instead of overwriting existing ones.
 pub async fn next_image_idx(pool: &SqlitePool, job_id: i64) -> Result<i64, sqlx::Error> {

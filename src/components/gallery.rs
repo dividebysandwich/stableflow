@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
-use crate::api::{get_job, get_job_images};
+use crate::api::{delete_image, get_job, get_job_images};
 use crate::models::{Job, JobParams};
 
 #[component]
@@ -27,13 +27,19 @@ pub fn JobDetailPage() -> impl IntoView {
         );
     });
 
+    let del_img = Action::new(|input: &(i64, i64)| {
+        let (job_id, idx) = *input;
+        async move { delete_image(job_id, idx).await }
+    });
+
     let job = Resource::new(
         move || (job_id.get(), tick.get()),
         |(id, _)| async move { get_job(id).await.ok().flatten() },
     );
     let images = Resource::new(
-        move || (job_id.get(), tick.get()),
-        |(id, _)| async move { get_job_images(id).await.unwrap_or_default() },
+        // Refetch on each poll tick and immediately after a deletion.
+        move || (job_id.get(), tick.get(), del_img.version().get()),
+        |(id, _, _)| async move { get_job_images(id).await.unwrap_or_default() },
     );
 
     view! {
@@ -70,7 +76,13 @@ pub fn JobDetailPage() -> impl IntoView {
                                         </a>
                                         <div class="gallery-cap">
                                             <span class="muted">{format!("seed {}", im.seed)}</span>
-                                            <a href=format!("/download/img/{id}/{idx}")>"download"</a>
+                                            <span class="cap-actions">
+                                                <a href=format!("/download/img/{id}/{idx}")>"download"</a>
+                                                <button
+                                                    class="del-btn"
+                                                    on:click=move |_| { del_img.dispatch((id, idx)); }
+                                                >"delete"</button>
+                                            </span>
                                         </div>
                                     </div>
                                 }

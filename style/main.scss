@@ -230,7 +230,13 @@ table.params td:first-child { color: var(--muted); width: 180px; }
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem;
 }
 .gallery-item img { width: 100%; height: auto; border-radius: 6px; display: block; }
-.gallery-cap { display: flex; justify-content: space-between; padding: 0.3rem 0.2rem 0; font-size: 0.82rem; }
+.gallery-cap { display: flex; justify-content: space-between; align-items: center; padding: 0.3rem 0.2rem 0; font-size: 0.82rem; }
+.cap-actions { display: flex; gap: 0.7rem; align-items: center; }
+.del-btn {
+    background: transparent; border: none; padding: 0;
+    color: var(--err); font-size: inherit; font-family: inherit; cursor: pointer;
+}
+.del-btn:hover { text-decoration: underline; background: transparent; }
 
 .logout-form { margin: 0; }
 .logout-form .link-btn { font-size: 0.85rem; }

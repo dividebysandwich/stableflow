@@ -117,6 +117,18 @@ pub async fn requeue_job(id: i64) -> Result<(), ServerFnError> {
     Ok(())
 }
 
+#[server(name = DeleteImage, prefix = "/api", input = Json)]
+pub async fn delete_image(job_id: i64, idx: i64) -> Result<(), ServerFnError> {
+    let st = state();
+    let paths = crate::server::db::delete_image(&st.pool, job_id, idx)
+        .await
+        .map_err(err)?;
+    for p in paths {
+        let _ = tokio::fs::remove_file(&p).await;
+    }
+    Ok(())
+}
+
 #[server(name = DeleteJob, prefix = "/api", input = Json)]
 pub async fn delete_job(id: i64) -> Result<(), ServerFnError> {
     let st = state();
