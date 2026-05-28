@@ -40,6 +40,50 @@ a:hover { text-decoration: underline; }
 
     > a { font-weight: 700; font-size: 1.15rem; color: var(--text); }
     .navlinks { display: flex; gap: 1rem; align-items: center; }
+    .navlink { color: var(--text); }
+}
+
+/* Hamburger toggle — hidden on wide screens, shown on mobile. */
+.hamburger {
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+    width: 38px;
+    height: 34px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+
+    span {
+        display: block;
+        width: 18px;
+        height: 2px;
+        margin: 0 auto;
+        background: var(--text);
+        border-radius: 2px;
+    }
+}
+.hamburger:hover { background: var(--panel-2); border-color: var(--accent); }
+
+@media (max-width: 640px) {
+    .hamburger { display: flex; }
+    .topnav { flex-wrap: wrap; }
+    .topnav .navlinks {
+        display: none;
+        flex-basis: 100%;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.5rem;
+        margin-top: 0.7rem;
+    }
+    .topnav .navlinks.open { display: flex; }
+    .topnav .navlink {
+        padding: 0.5rem 0.2rem;
+        border-bottom: 1px solid var(--border);
+    }
+    .topnav .logout-form .link-btn { width: 100%; }
 }
 
 .content { max-width: 1100px; margin: 0 auto; padding: 1.2rem; }
@@ -131,8 +175,16 @@ button:disabled { opacity: 0.6; cursor: default; }
 .badge-failed { color: #ffd7d2; border-color: var(--err); }
 .badge-canceled { color: #ffe9c2; border-color: var(--warn); }
 
-.thumb-strip { display: flex; gap: 0.4rem; }
-.thumb img { height: 84px; width: auto; border-radius: 6px; border: 1px solid var(--border); display: block; }
+.thumb-strip {
+    display: flex;
+    gap: 0.4rem;
+    overflow-x: auto;
+    max-width: 100%;
+    padding-bottom: 0.2rem;
+    -webkit-overflow-scrolling: touch;
+}
+.thumb { flex: 0 0 auto; }
+.thumb img { height: 130px; width: auto; border-radius: 6px; border: 1px solid var(--border); display: block; }
 
 .actions { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; font-size: 0.9rem; }
 

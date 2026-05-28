@@ -60,7 +60,7 @@ pub fn JobsPage() -> impl IntoView {
         <div class="page">
             <div class="page-head">
                 <h1>"Queue & history"</h1>
-                <A href="/new">"+ New job"</A>
+                <A href="/new" attr:class="btn">"+ New job"</A>
             </div>
 
             <RunningProgressBar/>

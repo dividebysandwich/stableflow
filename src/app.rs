@@ -56,13 +56,31 @@ pub fn App() -> impl IntoView {
 fn NavBar() -> impl IntoView {
     let location = use_location();
     let show = move || location.pathname.get() != "/login";
+
+    let (menu_open, set_menu_open) = signal(false);
+    let toggle = move |_| set_menu_open.update(|o| *o = !*o);
+    let close = move |_| set_menu_open.set(false);
+    // Collapse the menu automatically whenever the route changes.
+    Effect::new(move |_| {
+        location.pathname.track();
+        set_menu_open.set(false);
+    });
+
     view! {
         <Show when=show>
             <nav class="topnav">
                 <A href="/">"StableFlow"</A>
-                <div class="navlinks">
-                    <A href="/new">"+ New job"</A>
-                    <A href="/">"Queue & history"</A>
+                <button
+                    class="hamburger"
+                    aria-label="Menu"
+                    aria-expanded=move || menu_open.get().to_string()
+                    on:click=toggle
+                >
+                    <span></span><span></span><span></span>
+                </button>
+                <div class="navlinks" class:open=move || menu_open.get()>
+                    <A href="/new" on:click=close attr:class="navlink">"+ New job"</A>
+                    <A href="/" on:click=close attr:class="navlink">"Queue & history"</A>
                     <form method="post" action="/logout" class="logout-form">
                         <button type="submit" class="link-btn">"Logout"</button>
                     </form>

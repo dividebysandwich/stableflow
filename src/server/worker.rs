@@ -11,7 +11,7 @@ use image::ImageFormat;
 use crate::models::{JobParams, JobStatus};
 use crate::server::{db, AppState};
 
-const THUMB_MAX: u32 = 360;
+const THUMB_MAX: u32 = 512;
 
 /// Worker entry point. Loops forever, processing queued jobs FIFO and parking
 /// on `notify` when the queue is empty.
