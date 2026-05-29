@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use leptos::ev;
+use leptos::html;
 use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
@@ -117,6 +118,19 @@ pub fn JobDetailPage() -> impl IntoView {
     }
 }
 
+/// Clamp one axis of the pan offset so the scaled image never reveals empty
+/// space past its edge. With center-origin scaling the image extends
+/// `±(scale*image - container)/2` from center; if it's smaller than the
+/// container on this axis it stays centered (offset 0).
+fn clamp_axis(offset: f64, scale: f64, image: f64, container: f64) -> f64 {
+    let overflow = scale * image - container;
+    if overflow <= 0.0 {
+        0.0
+    } else {
+        offset.clamp(-overflow / 2.0, overflow / 2.0)
+    }
+}
+
 /// Fullscreen image viewer: scroll to zoom, drag to pan, arrow keys to switch
 /// images, Escape (or the backdrop / close button) to dismiss. Mounted only
 /// while open, so its window-level key listener lives exactly as long as it.
@@ -134,6 +148,25 @@ fn ImageViewer(
     // Whether the current press moved — so a click that ends a pan doesn't
     // also count as a backdrop "click to close".
     let moved = RwSignal::new(false);
+
+    // Element handles, used to read live geometry for zoom-to-cursor and pan
+    // clamping. The container fills the viewport (inset:0), so client coords
+    // are already container-relative.
+    let view_ref = NodeRef::<html::Div>::new();
+    let img_ref = NodeRef::<html::Img>::new();
+    // (image_w, image_h, container_w, container_h) at the current layout —
+    // image dims are the untransformed layout box (offset_*), unaffected by
+    // the CSS transform we apply.
+    let geom = move || -> Option<(f64, f64, f64, f64)> {
+        let img = img_ref.get_untracked()?;
+        let cont = view_ref.get_untracked()?;
+        Some((
+            img.offset_width() as f64,
+            img.offset_height() as f64,
+            cont.client_width() as f64,
+            cont.client_height() as f64,
+        ))
+    };
 
     // Closures capture only Copy signals, so they're Copy and reusable across
     // every handler (keyboard + buttons) without cloning.
@@ -196,14 +229,24 @@ fn ImageViewer(
 
     let on_wheel = move |e: ev::WheelEvent| {
         e.prevent_default();
+        let Some((iw, ih, cw, ch)) = geom() else { return };
+        let s = scale.get();
         let factor = if e.delta_y() < 0.0 { 1.15 } else { 1.0 / 1.15 };
-        let next = (scale.get() * factor).clamp(1.0, 10.0);
-        scale.set(next);
-        // Snap back to centered when fully zoomed out.
-        if next <= 1.0 {
-            tx.set(0.0);
-            ty.set(0.0);
+        let ns = (s * factor).clamp(1.0, 10.0);
+        if (ns - s).abs() < f64::EPSILON {
+            return;
         }
+        // Keep the image point under the cursor fixed. The image is centered,
+        // so its on-screen center is (cw/2 + tx, ch/2 + ty); scaling is about
+        // that center, translation is in screen px.
+        let (mx, my) = (e.client_x() as f64, e.client_y() as f64);
+        let cx = cw / 2.0 + tx.get();
+        let cy = ch / 2.0 + ty.get();
+        let ntx = mx - (ns / s) * (mx - cx) - cw / 2.0;
+        let nty = my - (ns / s) * (my - cy) - ch / 2.0;
+        scale.set(ns);
+        tx.set(clamp_axis(ntx, ns, iw, cw));
+        ty.set(clamp_axis(nty, ns, ih, ch));
     };
     let on_down = move |e: ev::MouseEvent| {
         e.prevent_default();
@@ -211,13 +254,15 @@ fn ImageViewer(
         drag.set(Some((e.client_x() as f64, e.client_y() as f64)));
     };
     let on_move = move |e: ev::MouseEvent| {
-        if let Some((lx, ly)) = drag.get() {
-            let (x, y) = (e.client_x() as f64, e.client_y() as f64);
-            tx.update(|v| *v += x - lx);
-            ty.update(|v| *v += y - ly);
-            drag.set(Some((x, y)));
-            moved.set(true);
+        let Some((lx, ly)) = drag.get() else { return };
+        let (x, y) = (e.client_x() as f64, e.client_y() as f64);
+        if let Some((iw, ih, cw, ch)) = geom() {
+            let s = scale.get();
+            tx.set(clamp_axis(tx.get() + (x - lx), s, iw, cw));
+            ty.set(clamp_axis(ty.get() + (y - ly), s, ih, ch));
         }
+        drag.set(Some((x, y)));
+        moved.set(true);
     };
     let end_drag = move |_| drag.set(None);
     // Click on the backdrop closes — but not the click that finishes a drag.
@@ -230,6 +275,7 @@ fn ImageViewer(
     view! {
         <div
             class="viewer"
+            node_ref=view_ref
             on:wheel=on_wheel
             on:mousedown=on_down
             on:mousemove=on_move
@@ -251,6 +297,7 @@ fn ImageViewer(
             >"\u{203a}"</button>
             <img
                 class="viewer-img"
+                node_ref=img_ref
                 src=src
                 style=style
                 draggable="false"
