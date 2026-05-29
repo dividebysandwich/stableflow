@@ -80,7 +80,13 @@ pub fn JobDetailPage() -> impl IntoView {
                                                 <a href=format!("/download/img/{id}/{idx}")>"download"</a>
                                                 <button
                                                     class="del-btn"
-                                                    on:click=move |_| { del_img.dispatch((id, idx)); }
+                                                    on:click=move |_| {
+                                                        if crate::components::confirm(
+                                                            "Delete this image? This cannot be undone."
+                                                        ) {
+                                                            del_img.dispatch((id, idx));
+                                                        }
+                                                    }
                                                 >"delete"</button>
                                             </span>
                                         </div>

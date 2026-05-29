@@ -144,7 +144,13 @@ fn job_card(
                 </Show>
                 <button
                     class="link-btn danger"
-                    on:click=move |_| { delete.dispatch(id); }
+                    on:click=move |_| {
+                        if crate::components::confirm(
+                            "Delete this job and all its images? This cannot be undone."
+                        ) {
+                            delete.dispatch(id);
+                        }
+                    }
                 >"Delete"</button>
             </div>
         </div>
