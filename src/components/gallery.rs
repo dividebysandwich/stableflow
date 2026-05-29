@@ -334,6 +334,24 @@ fn ImageViewer(
     });
     on_cleanup(move || handle.remove());
 
+    // Lock background scroll while open so the page can't shift under the fixed
+    // overlay on mobile. Toggled via a body class; removed on unmount.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let set_lock = |on: bool| {
+            if let Some(body) = leptos::prelude::document().body() {
+                let list = body.class_list();
+                let _ = if on {
+                    list.add_1("viewer-open")
+                } else {
+                    list.remove_1("viewer-open")
+                };
+            }
+        };
+        set_lock(true);
+        on_cleanup(move || set_lock(false));
+    }
+
     let src = move || {
         open.get()
             .map(|idx| format!("/img/{job_id}/{idx}"))

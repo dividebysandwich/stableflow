@@ -22,7 +22,12 @@ html, body {
     color: var(--text);
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     font-size: 15px;
+    /* Never let stray content widen the page — on mobile that would zoom the
+       layout viewport and shift the fixed image viewer off-center. */
+    overflow-x: hidden;
 }
+/* Freeze background scroll while the fullscreen image viewer is open. */
+body.viewer-open { overflow: hidden; }
 
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -220,12 +225,12 @@ legend { padding: 0 0.4rem; color: var(--muted); }
 .form-actions { display: flex; gap: 0.8rem; }
 
 /* ---- Gallery / detail ---- */
-.detail-head { display: flex; align-items: center; gap: 0.8rem; }
-.detail-actions { display: flex; gap: 1rem; align-items: center; }
-table.params { border-collapse: collapse; width: 100%; max-width: 760px; }
-table.params td { border-bottom: 1px solid var(--border); padding: 0.35rem 0.6rem; vertical-align: top; }
+.detail-head { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
+.detail-actions { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+table.params { border-collapse: collapse; width: 100%; max-width: 760px; table-layout: fixed; }
+table.params td { border-bottom: 1px solid var(--border); padding: 0.35rem 0.6rem; vertical-align: top; overflow-wrap: anywhere; }
 table.params td:first-child { color: var(--muted); width: 180px; }
-.prompt-cell { white-space: pre-wrap; }
+.prompt-cell { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .gallery-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.8rem;
@@ -252,6 +257,9 @@ table.params td:first-child { color: var(--muted); width: 180px; }
 /* ---- Fullscreen image viewer ---- */
 .viewer {
     position: fixed; inset: 0; z-index: 100;
+    /* Dynamic viewport height tracks the mobile address bar so the overlay
+       matches the *visible* area and the image stays centered. */
+    height: 100vh; height: 100dvh;
     display: flex; align-items: center; justify-content: center;
     background: rgba(0, 0, 0, 0.92);
     overflow: hidden; overscroll-behavior: contain;
@@ -260,7 +268,9 @@ table.params td:first-child { color: var(--muted); width: 180px; }
     touch-action: none;
 }
 .viewer-img {
-    max-width: 96vw; max-height: 92vh;
+    /* Sized against the overlay box (not vw/vh) so it can't exceed the visible
+       area on mobile. */
+    max-width: 100%; max-height: 100%;
     transform-origin: center center; will-change: transform;
     cursor: grab; -webkit-user-drag: none; touch-action: none;
 }
