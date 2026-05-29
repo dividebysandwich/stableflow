@@ -226,9 +226,18 @@ table.params td:first-child { color: var(--muted); width: 180px; }
 .gallery-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.8rem;
 }
+.gallery-tools { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
 .gallery-item {
+    position: relative;
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem;
 }
+.gallery-item.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.select-box {
+    position: absolute; top: 0.5rem; left: 0.5rem; z-index: 2;
+    display: flex; padding: 0.25rem; cursor: pointer;
+    background: rgba(20, 24, 32, 0.75); border-radius: 6px;
+}
+.select-box input { width: 18px; height: 18px; margin: 0; cursor: pointer; accent-color: var(--accent); }
 .gallery-item img { width: 100%; height: auto; border-radius: 6px; display: block; }
 .thumb-btn {
     display: block; width: 100%; padding: 0; border: none;

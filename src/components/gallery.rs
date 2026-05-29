@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use leptos::ev;
@@ -6,7 +7,7 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
-use crate::api::{delete_image, get_job, get_job_images};
+use crate::api::{delete_image, delete_images, get_job, get_job_images};
 use crate::models::{ImageMeta, Job, JobParams};
 
 #[component]
@@ -33,21 +34,60 @@ pub fn JobDetailPage() -> impl IntoView {
         let (job_id, idx) = *input;
         async move { delete_image(job_id, idx).await }
     });
+    let del_multi = Action::new(|input: &(i64, Vec<i64>)| {
+        let (job_id, idxs) = input.clone();
+        async move { delete_images(job_id, idxs).await }
+    });
 
     let job = Resource::new(
         move || (job_id.get(), tick.get()),
         |(id, _)| async move { get_job(id).await.ok().flatten() },
     );
     let images = Resource::new(
-        // Refetch on each poll tick and immediately after a deletion.
-        move || (job_id.get(), tick.get(), del_img.version().get()),
-        |(id, _, _)| async move { get_job_images(id).await.unwrap_or_default() },
+        // Refetch on each poll tick and immediately after any deletion.
+        move || {
+            (
+                job_id.get(),
+                tick.get(),
+                del_img.version().get(),
+                del_multi.version().get(),
+            )
+        },
+        |(id, ..)| async move { get_job_images(id).await.unwrap_or_default() },
     );
 
     // Always-available view of the image list, plus which one (by list
     // position) the fullscreen viewer is showing, if any.
     let imgs = Signal::derive(move || images.get().unwrap_or_default());
     let viewer = RwSignal::new(None::<usize>);
+
+    // idx values marked (via checkboxes) for batch deletion.
+    let selected = RwSignal::new(HashSet::<i64>::new());
+    let sel_count = move || selected.get().len();
+    let select_all = move |_| selected.set(imgs.get().iter().map(|im| im.idx).collect());
+    let select_none = move |_| selected.set(HashSet::new());
+    let delete_selected = move |_| {
+        let ids: Vec<i64> = selected.get().iter().copied().collect();
+        if ids.is_empty() {
+            return;
+        }
+        if crate::components::confirm(&format!(
+            "Delete {} selected image(s)? This cannot be undone.",
+            ids.len()
+        )) {
+            del_multi.dispatch((job_id.get(), ids));
+            selected.set(HashSet::new());
+        }
+    };
+    // Drop selections whose images no longer exist (deleted elsewhere / by
+    // polling), so the "(N)" count stays truthful. Only writes when needed.
+    Effect::new(move |_| {
+        let existing: HashSet<i64> = imgs.get().iter().map(|im| im.idx).collect();
+        let has_stale = selected.with_untracked(|s| s.iter().any(|i| !existing.contains(i)));
+        if has_stale {
+            selected.update(|s| s.retain(|i| existing.contains(i)));
+        }
+    });
 
     view! {
         <div class="page">
@@ -69,6 +109,17 @@ pub fn JobDetailPage() -> impl IntoView {
                     when=move || !images.get().unwrap_or_default().is_empty()
                     fallback=|| view! { <p class="muted">"No images yet."</p> }
                 >
+                    <div class="gallery-tools">
+                        <button class="link-btn" on:click=select_all>"Select all"</button>
+                        <button class="link-btn" on:click=select_none>"Select none"</button>
+                        <button
+                            class="link-btn danger"
+                            disabled=move || sel_count() == 0
+                            on:click=delete_selected
+                        >
+                            {move || format!("Delete selected ({})", sel_count())}
+                        </button>
+                    </div>
                     <div class="gallery-grid">
                         <For
                             each=move || imgs.get()
@@ -82,8 +133,23 @@ pub fn JobDetailPage() -> impl IntoView {
                                         viewer.set(Some(p));
                                     }
                                 };
+                                let is_sel = move || selected.with(|s| s.contains(&idx));
+                                let toggle = move |_| {
+                                    selected.update(|s| {
+                                        if !s.insert(idx) {
+                                            s.remove(&idx);
+                                        }
+                                    });
+                                };
                                 view! {
-                                    <div class="gallery-item">
+                                    <div class="gallery-item" class:selected=is_sel>
+                                        <label class="select-box" title="Mark for deletion">
+                                            <input
+                                                type="checkbox"
+                                                prop:checked=is_sel
+                                                on:change=toggle
+                                            />
+                                        </label>
                                         <button class="thumb-btn" on:click=open>
                                             <img src=format!("/thumb/{id}/{idx}") loading="lazy" alt=""/>
                                         </button>
