@@ -112,7 +112,7 @@ pub fn JobDetailPage() -> impl IntoView {
             </Transition>
 
             <Show when=move || viewer.get().is_some()>
-                <ImageViewer job_id=job_id.get() images=imgs open=viewer/>
+                <ImageViewer job_id=job_id.get() images=imgs open=viewer delete=del_img/>
             </Show>
         </div>
     }
@@ -139,6 +139,7 @@ fn ImageViewer(
     job_id: i64,
     images: Signal<Vec<ImageMeta>>,
     open: RwSignal<Option<usize>>,
+    delete: Action<(i64, i64), Result<(), ServerFnError>>,
 ) -> impl IntoView {
     let scale = RwSignal::new(1.0_f64);
     let tx = RwSignal::new(0.0_f64);
@@ -188,8 +189,28 @@ fn ImageViewer(
         }
     };
     let close = move || open.set(None);
+    let del_current = move || {
+        if let Some(idx) = open.get().and_then(|p| images.get().get(p).map(|im| im.idx)) {
+            if crate::components::confirm("Delete this image? This cannot be undone.") {
+                delete.dispatch((job_id, idx));
+            }
+        }
+    };
 
-    // Arrow keys navigate, Escape closes. Removed when the viewer unmounts.
+    // Keep the open position valid after the list shrinks (e.g. a deletion):
+    // the next image slides into the same slot, but if we were on the last one
+    // step back, and if none remain, close. Depends only on the image list.
+    Effect::new(move |_| {
+        let n = images.get().len();
+        match open.get_untracked() {
+            Some(_) if n == 0 => open.set(None),
+            Some(p) if p >= n => open.set(Some(n - 1)),
+            _ => {}
+        }
+    });
+
+    // Arrow keys navigate, Delete removes the current image, Escape closes.
+    // Removed when the viewer unmounts.
     let handle = window_event_listener(ev::keydown, move |e: ev::KeyboardEvent| {
         match e.key().as_str() {
             "Escape" => close(),
@@ -200,6 +221,10 @@ fn ImageViewer(
             "ArrowRight" => {
                 e.prevent_default();
                 go(1);
+            }
+            "Delete" => {
+                e.prevent_default();
+                del_current();
             }
             _ => {}
         }
