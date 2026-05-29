@@ -56,6 +56,30 @@ pub fn JobsPage() -> impl IntoView {
         |_| async move { list_jobs().await.unwrap_or_default() },
     );
 
+    // Client-side pagination, 10 jobs per page. The list is already fully
+    // fetched (and polled), so we just slice it.
+    const PER_PAGE: usize = 10;
+    let all_jobs = Signal::derive(move || jobs.get().unwrap_or_default());
+    let page = RwSignal::new(0usize);
+    let page_count = move || all_jobs.get().len().div_ceil(PER_PAGE).max(1);
+    // Clamp the stored page in case the job count shrank (e.g. deletions).
+    let cur_page = move || page.get().min(page_count() - 1);
+    let page_jobs = move || {
+        all_jobs
+            .get()
+            .into_iter()
+            .skip(cur_page() * PER_PAGE)
+            .take(PER_PAGE)
+            .collect::<Vec<_>>()
+    };
+    let prev = move |_| page.set(cur_page().saturating_sub(1));
+    let next = move |_| page.set((cur_page() + 1).min(page_count() - 1));
+    // Named to keep comparison operators out of the `view!` macro (where a bare
+    // `>` would be parsed as a tag close).
+    let many_pages = move || page_count() > 1;
+    let at_first = move || cur_page() == 0;
+    let at_last = move || cur_page() + 1 >= page_count();
+
     view! {
         <div class="page">
             <div class="page-head">
@@ -70,16 +94,29 @@ pub fn JobsPage() -> impl IntoView {
             // (status, image_count) actually changed — so nothing flashes.
             <Transition fallback=|| view! { <p class="muted">"Loading jobs\u{2026}"</p> }>
                 <Show
-                    when=move || !jobs.get().unwrap_or_default().is_empty()
+                    when=move || !all_jobs.get().is_empty()
                     fallback=|| view! { <p class="muted">"No jobs yet. Create one to get started."</p> }
                 >
                     <div class="job-list">
                         <For
-                            each=move || jobs.get().unwrap_or_default()
+                            each=move || page_jobs()
                             key=|job| (job.id, job.status, job.image_count, job.error.is_some())
                             children=move |job| job_card(job, cancel, requeue, delete)
                         />
                     </div>
+                    <Show when=many_pages>
+                        <div class="pager">
+                            <button class="link-btn" disabled=at_first on:click=prev>
+                                "\u{2039} Prev"
+                            </button>
+                            <span class="muted">
+                                {move || format!("Page {} of {}", cur_page() + 1, page_count())}
+                            </span>
+                            <button class="link-btn" disabled=at_last on:click=next>
+                                "Next \u{203a}"
+                            </button>
+                        </div>
+                    </Show>
                 </Show>
             </Transition>
         </div>

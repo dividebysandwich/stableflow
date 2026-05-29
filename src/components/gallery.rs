@@ -56,10 +56,12 @@ pub fn JobDetailPage() -> impl IntoView {
         |(id, ..)| async move { get_job_images(id).await.unwrap_or_default() },
     );
 
-    // Always-available view of the image list, plus which one (by list
-    // position) the fullscreen viewer is showing, if any.
+    // Always-available view of the image list, plus which image (by stable
+    // idx, not list position) the fullscreen viewer is showing, if any.
+    // Tracking by idx keeps deletion/navigation correct even while a running
+    // job appends new images and shifts list positions underneath us.
     let imgs = Signal::derive(move || images.get().unwrap_or_default());
-    let viewer = RwSignal::new(None::<usize>);
+    let viewer = RwSignal::new(None::<i64>);
 
     // idx values marked (via checkboxes) for batch deletion.
     let selected = RwSignal::new(HashSet::<i64>::new());
@@ -127,12 +129,8 @@ pub fn JobDetailPage() -> impl IntoView {
                             children=move |im| {
                                 let id = job_id.get();
                                 let idx = im.idx;
-                                // Open the fullscreen viewer at this image's position.
-                                let open = move |_| {
-                                    if let Some(p) = imgs.get().iter().position(|m| m.idx == idx) {
-                                        viewer.set(Some(p));
-                                    }
-                                };
+                                // Open the fullscreen viewer on this image.
+                                let open = move |_| viewer.set(Some(idx));
                                 let is_sel = move || selected.with(|s| s.contains(&idx));
                                 let toggle = move |_| {
                                     selected.update(|s| {
@@ -197,24 +195,39 @@ fn clamp_axis(offset: f64, scale: f64, image: f64, container: f64) -> f64 {
     }
 }
 
-/// Fullscreen image viewer: scroll to zoom, drag to pan, arrow keys to switch
-/// images, Escape (or the backdrop / close button) to dismiss. Mounted only
-/// while open, so its window-level key listener lives exactly as long as it.
+/// Distance between two tracked pointers `(id, x, y)`.
+fn pointer_dist(a: (i32, f64, f64), b: (i32, f64, f64)) -> f64 {
+    ((a.1 - b.1).powi(2) + (a.2 - b.2).powi(2)).sqrt()
+}
+
+/// Minimum horizontal travel (px) of a one-finger gesture to count as a swipe.
+const SWIPE_PX: f64 = 50.0;
+
+/// Fullscreen image viewer. Desktop: scroll to zoom (toward cursor), drag to
+/// pan, arrow keys to switch, Delete to remove, Escape/backdrop/✕ to close.
+/// Touch: one-finger swipe to switch images, pinch to zoom, drag to pan.
+/// `open` holds the *idx* of the shown image (stable across list changes).
 #[component]
 fn ImageViewer(
     job_id: i64,
     images: Signal<Vec<ImageMeta>>,
-    open: RwSignal<Option<usize>>,
+    open: RwSignal<Option<i64>>,
     delete: Action<(i64, i64), Result<(), ServerFnError>>,
 ) -> impl IntoView {
     let scale = RwSignal::new(1.0_f64);
     let tx = RwSignal::new(0.0_f64);
     let ty = RwSignal::new(0.0_f64);
-    // Last cursor position while a drag is in progress (None = not dragging).
+    // Anchor of the in-progress one-pointer pan (None = not panning).
     let drag = RwSignal::new(None::<(f64, f64)>);
-    // Whether the current press moved — so a click that ends a pan doesn't
-    // also count as a backdrop "click to close".
+    // Whether the current gesture moved — so the click that ends a drag/swipe
+    // doesn't also count as a backdrop "click to close".
     let moved = RwSignal::new(false);
+    // Active pointers (id, x, y) — unifies mouse + touch and enables pinch.
+    let pointers = RwSignal::new(Vec::<(i32, f64, f64)>::new());
+    // Previous two-finger distance during a pinch.
+    let pinch_prev = RwSignal::new(None::<f64>);
+    // Start x of a one-finger swipe at scale 1 (touch only; None = not armed).
+    let swipe_x = RwSignal::new(None::<f64>);
 
     // Element handles, used to read live geometry for zoom-to-cursor and pan
     // clamping. The container fills the viewport (inset:0), so client coords
@@ -243,35 +256,59 @@ fn ImageViewer(
         ty.set(0.0);
         drag.set(None);
     };
+    // 0-based position of the shown image within the current list.
+    let cur_pos = move || {
+        open.get()
+            .and_then(|cur| images.get().iter().position(|m| m.idx == cur))
+    };
     let go = move |delta: i32| {
-        let n = images.get().len();
+        let list = images.get();
+        let n = list.len();
         if n == 0 {
             return;
         }
-        if let Some(p) = open.get() {
-            let next = (p as i32 + delta).rem_euclid(n as i32) as usize;
-            open.set(Some(next));
-            reset();
-        }
+        let Some(pos) = open.get().and_then(|cur| list.iter().position(|m| m.idx == cur)) else {
+            return;
+        };
+        let np = (pos as i32 + delta).rem_euclid(n as i32) as usize;
+        open.set(Some(list[np].idx));
+        reset();
     };
     let close = move || open.set(None);
     let del_current = move || {
-        if let Some(idx) = open.get().and_then(|p| images.get().get(p).map(|im| im.idx)) {
-            if crate::components::confirm("Delete this image? This cannot be undone.") {
-                delete.dispatch((job_id, idx));
-            }
+        let Some(cur) = open.get() else { return };
+        if !crate::components::confirm("Delete this image? This cannot be undone.") {
+            return;
         }
+        // Advance to a neighbour by *idx* before dispatching, so we never rely
+        // on positional indices (which shift as a running job appends images).
+        let list = images.get();
+        if let Some(pos) = list.iter().position(|m| m.idx == cur) {
+            let next = list
+                .get(pos + 1)
+                .or_else(|| pos.checked_sub(1).and_then(|p| list.get(p)));
+            open.set(next.map(|m| m.idx)); // None (was the only image) → closes
+            reset();
+        }
+        delete.dispatch((job_id, cur));
     };
 
-    // Keep the open position valid after the list shrinks (e.g. a deletion):
-    // the next image slides into the same slot, but if we were on the last one
-    // step back, and if none remain, close. Depends only on the image list.
+    // If the shown image vanishes (deleted elsewhere, or not yet in a fresh
+    // fetch), jump to the nearest remaining image by idx — or close if none.
     Effect::new(move |_| {
-        let n = images.get().len();
-        match open.get_untracked() {
-            Some(_) if n == 0 => open.set(None),
-            Some(p) if p >= n => open.set(Some(n - 1)),
-            _ => {}
+        let list = images.get();
+        let Some(cur) = open.get_untracked() else { return };
+        if list.is_empty() {
+            open.set(None);
+        } else if !list.iter().any(|m| m.idx == cur) {
+            let next = list
+                .iter()
+                .map(|m| m.idx)
+                .filter(|&i| i > cur)
+                .min()
+                .or_else(|| list.iter().map(|m| m.idx).max());
+            open.set(next);
+            reset();
         }
     });
 
@@ -299,13 +336,12 @@ fn ImageViewer(
 
     let src = move || {
         open.get()
-            .and_then(|p| images.get().get(p).map(|im| im.idx))
             .map(|idx| format!("/img/{job_id}/{idx}"))
             .unwrap_or_default()
     };
     let caption = move || {
         let n = images.get().len();
-        open.get()
+        cur_pos()
             .map(|p| format!("{} / {n}", p + 1))
             .unwrap_or_default()
     };
@@ -318,19 +354,15 @@ fn ImageViewer(
         )
     };
 
-    let on_wheel = move |e: ev::WheelEvent| {
-        e.prevent_default();
+    // Zoom to `ns`, keeping the screen point (mx, my) fixed. The image is
+    // centered, so its on-screen center is (cw/2 + tx, ch/2 + ty); scaling is
+    // about that center and translation is in screen px. Shared by wheel + pinch.
+    let zoom_to = move |ns: f64, mx: f64, my: f64| {
         let Some((iw, ih, cw, ch)) = geom() else { return };
         let s = scale.get();
-        let factor = if e.delta_y() < 0.0 { 1.15 } else { 1.0 / 1.15 };
-        let ns = (s * factor).clamp(1.0, 10.0);
-        if (ns - s).abs() < f64::EPSILON {
+        if s <= 0.0 {
             return;
         }
-        // Keep the image point under the cursor fixed. The image is centered,
-        // so its on-screen center is (cw/2 + tx, ch/2 + ty); scaling is about
-        // that center, translation is in screen px.
-        let (mx, my) = (e.client_x() as f64, e.client_y() as f64);
         let cx = cw / 2.0 + tx.get();
         let cy = ch / 2.0 + ty.get();
         let ntx = mx - (ns / s) * (mx - cx) - cw / 2.0;
@@ -339,24 +371,118 @@ fn ImageViewer(
         tx.set(clamp_axis(ntx, ns, iw, cw));
         ty.set(clamp_axis(nty, ns, ih, ch));
     };
-    let on_down = move |e: ev::MouseEvent| {
+
+    let on_wheel = move |e: ev::WheelEvent| {
         e.prevent_default();
-        moved.set(false);
-        drag.set(Some((e.client_x() as f64, e.client_y() as f64)));
-    };
-    let on_move = move |e: ev::MouseEvent| {
-        let Some((lx, ly)) = drag.get() else { return };
-        let (x, y) = (e.client_x() as f64, e.client_y() as f64);
-        if let Some((iw, ih, cw, ch)) = geom() {
-            let s = scale.get();
-            tx.set(clamp_axis(tx.get() + (x - lx), s, iw, cw));
-            ty.set(clamp_axis(ty.get() + (y - ly), s, ih, ch));
+        let s = scale.get();
+        let factor = if e.delta_y() < 0.0 { 1.15 } else { 1.0 / 1.15 };
+        let ns = (s * factor).clamp(1.0, 10.0);
+        if (ns - s).abs() >= f64::EPSILON {
+            zoom_to(ns, e.client_x() as f64, e.client_y() as f64);
         }
-        drag.set(Some((x, y)));
-        moved.set(true);
     };
-    let end_drag = move |_| drag.set(None);
-    // Click on the backdrop closes — but not the click that finishes a drag.
+
+    let on_pdown = move |e: ev::PointerEvent| {
+        let id = e.pointer_id();
+        let (x, y) = (e.client_x() as f64, e.client_y() as f64);
+        pointers.update(|v| {
+            v.retain(|p| p.0 != id);
+            v.push((id, x, y));
+        });
+        moved.set(false);
+        if pointers.with_untracked(|v| v.len()) >= 2 {
+            // Two fingers down → start a pinch, suspend pan/swipe.
+            drag.set(None);
+            swipe_x.set(None);
+            let (a, b) = pointers.with_untracked(|v| (v[0], v[1]));
+            pinch_prev.set(Some(pointer_dist(a, b)));
+        } else {
+            drag.set(Some((x, y)));
+            // Arm a swipe only for touch at scale 1 (mouse uses arrows/wheel).
+            let armed = e.pointer_type() == "touch" && (scale.get() - 1.0).abs() < f64::EPSILON;
+            swipe_x.set(armed.then_some(x));
+        }
+    };
+    let on_pmove = move |e: ev::PointerEvent| {
+        let id = e.pointer_id();
+        let (x, y) = (e.client_x() as f64, e.client_y() as f64);
+        let n = pointers.with_untracked(|v| v.len());
+        pointers.update(|v| {
+            if let Some(p) = v.iter_mut().find(|p| p.0 == id) {
+                p.1 = x;
+                p.2 = y;
+            }
+        });
+        if n >= 2 {
+            // Pinch: scale by the ratio of the two-finger distance, toward the
+            // midpoint between the fingers.
+            let (a, b) = pointers.with_untracked(|v| (v[0], v[1]));
+            let d = pointer_dist(a, b);
+            if let Some(prev) = pinch_prev.get_untracked() {
+                if prev > 0.0 {
+                    let ns = (scale.get() * (d / prev)).clamp(1.0, 10.0);
+                    zoom_to(ns, (a.1 + b.1) / 2.0, (a.2 + b.2) / 2.0);
+                }
+            }
+            pinch_prev.set(Some(d));
+            moved.set(true);
+        } else if let Some((lx, ly)) = drag.get_untracked() {
+            if (x - lx).abs() + (y - ly).abs() > 2.0 {
+                moved.set(true);
+            }
+            // Pan only when zoomed in (otherwise a one-finger move is a swipe).
+            if scale.get() > 1.0 {
+                if let Some((iw, ih, cw, ch)) = geom() {
+                    let s = scale.get();
+                    tx.set(clamp_axis(tx.get() + (x - lx), s, iw, cw));
+                    ty.set(clamp_axis(ty.get() + (y - ly), s, ih, ch));
+                }
+            }
+            drag.set(Some((x, y)));
+        }
+    };
+    let on_pup = move |e: ev::PointerEvent| {
+        let id = e.pointer_id();
+        let x = e.client_x() as f64;
+        let before = pointers.with_untracked(|v| v.len());
+        pointers.update(|v| v.retain(|p| p.0 != id));
+        let after = pointers.with_untracked(|v| v.len());
+        // A one-finger lift at scale 1 with enough horizontal travel = swipe.
+        if before == 1 && (scale.get() - 1.0).abs() < f64::EPSILON {
+            if let Some(sx) = swipe_x.get_untracked() {
+                let dx = x - sx;
+                if dx <= -SWIPE_PX {
+                    go(1);
+                } else if dx >= SWIPE_PX {
+                    go(-1);
+                }
+            }
+        }
+        if after < 2 {
+            pinch_prev.set(None);
+        }
+        swipe_x.set(None);
+        if after == 0 {
+            drag.set(None);
+        } else {
+            // Resume single-pointer pan with whatever finger remains.
+            let p = pointers.with_untracked(|v| v[0]);
+            drag.set(Some((p.1, p.2)));
+        }
+    };
+    let on_pcancel = move |e: ev::PointerEvent| {
+        let id = e.pointer_id();
+        pointers.update(|v| v.retain(|p| p.0 != id));
+        let after = pointers.with_untracked(|v| v.len());
+        if after < 2 {
+            pinch_prev.set(None);
+        }
+        if after == 0 {
+            drag.set(None);
+        }
+        swipe_x.set(None);
+    };
+    // Click on the backdrop closes — but not the click that ends a drag/swipe.
     let on_backdrop_click = move |_| {
         if !moved.get() {
             close();
@@ -368,10 +494,11 @@ fn ImageViewer(
             class="viewer"
             node_ref=view_ref
             on:wheel=on_wheel
-            on:mousedown=on_down
-            on:mousemove=on_move
-            on:mouseup=end_drag
-            on:mouseleave=end_drag
+            on:pointerdown=on_pdown
+            on:pointermove=on_pmove
+            on:pointerup=on_pup
+            on:pointercancel=on_pcancel
+            on:pointerleave=on_pcancel
             on:click=on_backdrop_click
         >
             <button
