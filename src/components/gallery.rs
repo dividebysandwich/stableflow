@@ -1,11 +1,12 @@
 use std::time::Duration;
 
+use leptos::ev;
 use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
 use crate::api::{delete_image, get_job, get_job_images};
-use crate::models::{Job, JobParams};
+use crate::models::{ImageMeta, Job, JobParams};
 
 #[component]
 pub fn JobDetailPage() -> impl IntoView {
@@ -42,6 +43,11 @@ pub fn JobDetailPage() -> impl IntoView {
         |(id, _, _)| async move { get_job_images(id).await.unwrap_or_default() },
     );
 
+    // Always-available view of the image list, plus which one (by list
+    // position) the fullscreen viewer is showing, if any.
+    let imgs = Signal::derive(move || images.get().unwrap_or_default());
+    let viewer = RwSignal::new(None::<usize>);
+
     view! {
         <div class="page">
             <A href="/">"\u{2190} Back to queue"</A>
@@ -64,16 +70,22 @@ pub fn JobDetailPage() -> impl IntoView {
                 >
                     <div class="gallery-grid">
                         <For
-                            each=move || images.get().unwrap_or_default()
+                            each=move || imgs.get()
                             key=|im| (im.idx, im.seed)
                             children=move |im| {
                                 let id = job_id.get();
                                 let idx = im.idx;
+                                // Open the fullscreen viewer at this image's position.
+                                let open = move |_| {
+                                    if let Some(p) = imgs.get().iter().position(|m| m.idx == idx) {
+                                        viewer.set(Some(p));
+                                    }
+                                };
                                 view! {
                                     <div class="gallery-item">
-                                        <a href=format!("/img/{id}/{idx}") target="_blank">
+                                        <button class="thumb-btn" on:click=open>
                                             <img src=format!("/thumb/{id}/{idx}") loading="lazy" alt=""/>
-                                        </a>
+                                        </button>
                                         <div class="gallery-cap">
                                             <span class="muted">{format!("seed {}", im.seed)}</span>
                                             <span class="cap-actions">
@@ -97,6 +109,155 @@ pub fn JobDetailPage() -> impl IntoView {
                     </div>
                 </Show>
             </Transition>
+
+            <Show when=move || viewer.get().is_some()>
+                <ImageViewer job_id=job_id.get() images=imgs open=viewer/>
+            </Show>
+        </div>
+    }
+}
+
+/// Fullscreen image viewer: scroll to zoom, drag to pan, arrow keys to switch
+/// images, Escape (or the backdrop / close button) to dismiss. Mounted only
+/// while open, so its window-level key listener lives exactly as long as it.
+#[component]
+fn ImageViewer(
+    job_id: i64,
+    images: Signal<Vec<ImageMeta>>,
+    open: RwSignal<Option<usize>>,
+) -> impl IntoView {
+    let scale = RwSignal::new(1.0_f64);
+    let tx = RwSignal::new(0.0_f64);
+    let ty = RwSignal::new(0.0_f64);
+    // Last cursor position while a drag is in progress (None = not dragging).
+    let drag = RwSignal::new(None::<(f64, f64)>);
+    // Whether the current press moved — so a click that ends a pan doesn't
+    // also count as a backdrop "click to close".
+    let moved = RwSignal::new(false);
+
+    // Closures capture only Copy signals, so they're Copy and reusable across
+    // every handler (keyboard + buttons) without cloning.
+    let reset = move || {
+        scale.set(1.0);
+        tx.set(0.0);
+        ty.set(0.0);
+        drag.set(None);
+    };
+    let go = move |delta: i32| {
+        let n = images.get().len();
+        if n == 0 {
+            return;
+        }
+        if let Some(p) = open.get() {
+            let next = (p as i32 + delta).rem_euclid(n as i32) as usize;
+            open.set(Some(next));
+            reset();
+        }
+    };
+    let close = move || open.set(None);
+
+    // Arrow keys navigate, Escape closes. Removed when the viewer unmounts.
+    let handle = window_event_listener(ev::keydown, move |e: ev::KeyboardEvent| {
+        match e.key().as_str() {
+            "Escape" => close(),
+            "ArrowLeft" => {
+                e.prevent_default();
+                go(-1);
+            }
+            "ArrowRight" => {
+                e.prevent_default();
+                go(1);
+            }
+            _ => {}
+        }
+    });
+    on_cleanup(move || handle.remove());
+
+    let src = move || {
+        open.get()
+            .and_then(|p| images.get().get(p).map(|im| im.idx))
+            .map(|idx| format!("/img/{job_id}/{idx}"))
+            .unwrap_or_default()
+    };
+    let caption = move || {
+        let n = images.get().len();
+        open.get()
+            .map(|p| format!("{} / {n}", p + 1))
+            .unwrap_or_default()
+    };
+    let style = move || {
+        format!(
+            "transform: translate({}px, {}px) scale({});",
+            tx.get(),
+            ty.get(),
+            scale.get()
+        )
+    };
+
+    let on_wheel = move |e: ev::WheelEvent| {
+        e.prevent_default();
+        let factor = if e.delta_y() < 0.0 { 1.15 } else { 1.0 / 1.15 };
+        let next = (scale.get() * factor).clamp(1.0, 10.0);
+        scale.set(next);
+        // Snap back to centered when fully zoomed out.
+        if next <= 1.0 {
+            tx.set(0.0);
+            ty.set(0.0);
+        }
+    };
+    let on_down = move |e: ev::MouseEvent| {
+        e.prevent_default();
+        moved.set(false);
+        drag.set(Some((e.client_x() as f64, e.client_y() as f64)));
+    };
+    let on_move = move |e: ev::MouseEvent| {
+        if let Some((lx, ly)) = drag.get() {
+            let (x, y) = (e.client_x() as f64, e.client_y() as f64);
+            tx.update(|v| *v += x - lx);
+            ty.update(|v| *v += y - ly);
+            drag.set(Some((x, y)));
+            moved.set(true);
+        }
+    };
+    let end_drag = move |_| drag.set(None);
+    // Click on the backdrop closes — but not the click that finishes a drag.
+    let on_backdrop_click = move |_| {
+        if !moved.get() {
+            close();
+        }
+    };
+
+    view! {
+        <div
+            class="viewer"
+            on:wheel=on_wheel
+            on:mousedown=on_down
+            on:mousemove=on_move
+            on:mouseup=end_drag
+            on:mouseleave=end_drag
+            on:click=on_backdrop_click
+        >
+            <button
+                class="viewer-close"
+                on:click=move |e: ev::MouseEvent| { e.stop_propagation(); close(); }
+            >"\u{2715}"</button>
+            <button
+                class="viewer-nav prev"
+                on:click=move |e: ev::MouseEvent| { e.stop_propagation(); go(-1); }
+            >"\u{2039}"</button>
+            <button
+                class="viewer-nav next"
+                on:click=move |e: ev::MouseEvent| { e.stop_propagation(); go(1); }
+            >"\u{203a}"</button>
+            <img
+                class="viewer-img"
+                src=src
+                style=style
+                draggable="false"
+                alt=""
+                on:click=move |e: ev::MouseEvent| e.stop_propagation()
+            />
+            <div class="viewer-cap">{caption}</div>
         </div>
     }
 }
