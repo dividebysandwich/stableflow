@@ -1,3 +1,7 @@
+// Leptos nests view/async types deeply enough (especially the inpaint editor)
+// to exceed the default type-recursion/layout depth limit.
+#![recursion_limit = "512"]
+
 pub mod api;
 pub mod app;
 pub mod components;
