@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::models::{FormOptions, JobParams};
+use crate::models::{FormOptions, InpaintParams, JobParams};
 
 #[derive(Clone)]
 pub struct Forge {
@@ -214,10 +214,76 @@ impl Forge {
             .await
             .map_err(|e| format!("decode failed: {e}"))?;
 
+        Ok(Self::parse_images(result))
+    }
+
+    /// Run one img2img / inpaint pass. `init_b64`/`mask_b64` are raw base64 PNGs
+    /// (no data-URL prefix). Returns `(base64_png, seed)` per produced image.
+    pub async fn img2img(
+        &self,
+        params: &JobParams,
+        inp: &InpaintParams,
+        init_b64: &str,
+        mask_b64: &str,
+    ) -> Result<Vec<(String, i64)>, String> {
+        let payload = json!({
+            "init_images": [init_b64],
+            "mask": mask_b64,
+            "denoising_strength": inp.denoising_strength,
+            "mask_blur": inp.mask_blur,
+            "inpainting_fill": inp.inpainting_fill,
+            "inpaint_full_res": inp.inpaint_full_res,
+            "inpaint_full_res_padding": inp.inpaint_full_res_padding,
+            "inpainting_mask_invert": inp.mask_invert,
+            // Init image is already the native size, so "just resize" is a no-op.
+            "resize_mode": 0,
+            "prompt": params.prompt,
+            "negative_prompt": params.negative_prompt,
+            "styles": params.styles,
+            "steps": params.steps,
+            "cfg_scale": params.cfg_scale,
+            "distilled_cfg_scale": params.distilled_cfg_scale,
+            "width": params.width,
+            "height": params.height,
+            "batch_size": 1,
+            "n_iter": 1,
+            "sampler_name": params.sampler_name,
+            "scheduler": params.scheduler,
+            "seed": params.seed,
+            "save_images": false,
+            "send_images": true,
+            "override_settings": { "sd_model_checkpoint": params.checkpoint },
+            "override_settings_restore_afterwards": true,
+        });
+
+        let resp = self
+            .client
+            .post(format!("{}/sdapi/v1/img2img", self.base))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| format!("request failed: {e}"))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("forge {status}: {body}"));
+        }
+
+        let result: Txt2ImgResponse = resp
+            .json()
+            .await
+            .map_err(|e| format!("decode failed: {e}"))?;
+
+        Ok(Self::parse_images(result))
+    }
+
+    /// Pair each returned base64 image with its seed (txt2img and img2img share
+    /// the `{images, info}` response shape).
+    fn parse_images(result: Txt2ImgResponse) -> Vec<(String, i64)> {
         let info: Txt2ImgInfo = serde_json::from_str(&result.info).unwrap_or_default();
         let seeds = &info.all_seeds;
-
-        Ok(result
+        result
             .images
             .into_iter()
             .enumerate()
@@ -225,6 +291,6 @@ impl Forge {
                 let seed = seeds.get(i).copied().unwrap_or(info.seed);
                 (img, seed)
             })
-            .collect())
+            .collect()
     }
 }

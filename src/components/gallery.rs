@@ -5,7 +5,7 @@ use leptos::ev;
 use leptos::html;
 use leptos::prelude::*;
 use leptos_router::components::A;
-use leptos_router::hooks::use_params_map;
+use leptos_router::hooks::{use_navigate, use_params_map};
 
 use crate::api::{delete_image, delete_images, get_job, get_job_images, set_star};
 use crate::models::{ImageMeta, Job, JobParams};
@@ -198,6 +198,7 @@ pub fn JobDetailPage() -> impl IntoView {
                                         <div class="gallery-cap">
                                             <span class="muted">{format!("seed {}", im.seed)}</span>
                                             <span class="cap-actions">
+                                                <A href=format!("/inpaint/new?src_job={id}&src_idx={idx}")>"inpaint"</A>
                                                 <a href=format!("/download/img/{id}/{idx}")>"download"</a>
                                                 <button
                                                     class="del-btn"
@@ -270,6 +271,7 @@ pub(crate) fn ImageViewer(
     delete: Action<(i64, i64), Result<(), ServerFnError>>,
     star: StarAction,
 ) -> impl IntoView {
+    let navigate = use_navigate();
     let scale = RwSignal::new(1.0_f64);
     let tx = RwSignal::new(0.0_f64);
     let ty = RwSignal::new(0.0_f64);
@@ -368,6 +370,13 @@ pub(crate) fn ImageViewer(
     let toggle_star = move || {
         let Some(meta) = cur_meta() else { return };
         star.dispatch((meta.job_id, meta.idx, !meta.starred));
+    };
+    let inpaint_current = move || {
+        let Some(meta) = cur_meta() else { return };
+        navigate(
+            &format!("/inpaint/new?src_job={}&src_idx={}", meta.job_id, meta.idx),
+            Default::default(),
+        );
     };
 
     // If the shown image vanishes (deleted elsewhere, un-starred out of a
@@ -606,6 +615,11 @@ pub(crate) fn ImageViewer(
                 {move || if is_starred() { "\u{2605}" } else { "\u{2606}" }}
             </button>
             <button
+                class="viewer-inpaint"
+                title="Inpaint this image"
+                on:click=move |e: ev::MouseEvent| { e.stop_propagation(); inpaint_current(); }
+            >"\u{270E}"</button>
+            <button
                 class="viewer-nav prev"
                 on:click=move |e: ev::MouseEvent| { e.stop_propagation(); go(-1); }
             >"\u{2039}"</button>
@@ -632,6 +646,7 @@ fn job_detail(job: Job) -> impl IntoView {
     let status = job.status.as_str().to_string();
     let p: JobParams = job.params.clone();
     let has_images = job.image_count > 0;
+    let is_inpaint = p.is_inpaint();
     let show_distilled = p.model_type.uses_distilled_cfg();
 
     let title = if job.name.trim().is_empty() {
@@ -660,6 +675,9 @@ fn job_detail(job: Job) -> impl IntoView {
         <div class="detail-actions">
             <Show when=move || has_images>
                 <a class="btn" href=format!("/download/job/{id}")>"Download all (zip)"</a>
+            </Show>
+            <Show when=move || is_inpaint>
+                <A href=format!("/inpaint/{id}")>"Continue inpainting"</A>
             </Show>
             <A href=format!("/new?from={id}")>"Reload as template"</A>
         </div>

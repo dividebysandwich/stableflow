@@ -68,6 +68,22 @@ async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             .await?;
     }
 
+    // Additive migration: per-result inpaint provenance. NULL for txt2img images
+    // and for pre-existing rows; set to the init/mask PNGs that produced an
+    // inpaint result so the UI can show "view the mask that made this".
+    let has_init_path = sqlx::query("SELECT 1 FROM pragma_table_info('images') WHERE name = 'init_path'")
+        .fetch_optional(pool)
+        .await?
+        .is_some();
+    if !has_init_path {
+        sqlx::query("ALTER TABLE images ADD COLUMN init_path TEXT")
+            .execute(pool)
+            .await?;
+        sqlx::query("ALTER TABLE images ADD COLUMN mask_path TEXT")
+            .execute(pool)
+            .await?;
+    }
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS sessions (
@@ -139,6 +155,45 @@ pub async fn insert_job(
     Ok(id)
 }
 
+/// Insert a job in a non-runnable `'draft'` state — the worker only picks up
+/// `'queued'` rows, so this lets the caller write input files and backfill
+/// `params_json` (with their paths) before flipping the job to queued via
+/// [`requeue_job`], avoiding a race where the worker grabs a half-initialized
+/// inpaint job. `JobStatus::from_str` maps the unknown `'draft'` to `Queued`,
+/// so the brief draft window just shows as "queued" in the UI.
+pub async fn insert_job_parked(
+    pool: &SqlitePool,
+    name: &str,
+    params: &JobParams,
+) -> Result<i64, sqlx::Error> {
+    let params_json = serde_json::to_string(params).unwrap_or_default();
+    let id = sqlx::query(
+        "INSERT INTO jobs (name, status, params_json) VALUES (?, 'draft', ?) RETURNING id",
+    )
+    .bind(name)
+    .bind(params_json)
+    .fetch_one(pool)
+    .await?
+    .get::<i64, _>("id");
+    Ok(id)
+}
+
+/// Overwrite a job's serialized params (used to record each inpaint turn's
+/// settings + input paths before re-queuing).
+pub async fn set_job_params(
+    pool: &SqlitePool,
+    id: i64,
+    params: &JobParams,
+) -> Result<(), sqlx::Error> {
+    let params_json = serde_json::to_string(params).unwrap_or_default();
+    sqlx::query("UPDATE jobs SET params_json = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(params_json)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn list_jobs(pool: &SqlitePool) -> Result<Vec<Job>, sqlx::Error> {
     let rows = sqlx::query(&format!("{JOB_SELECT} ORDER BY j.id DESC"))
         .fetch_all(pool)
@@ -172,7 +227,7 @@ pub async fn get_job_images(
     job_id: i64,
 ) -> Result<Vec<ImageMeta>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT id, job_id, idx, seed, width, height, starred FROM images WHERE job_id = ? ORDER BY idx ASC",
+        "SELECT id, job_id, idx, seed, width, height, starred, init_path FROM images WHERE job_id = ? ORDER BY idx ASC",
     )
     .bind(job_id)
     .fetch_all(pool)
@@ -189,13 +244,14 @@ fn row_to_image(r: &SqliteRow) -> ImageMeta {
         width: r.get("width"),
         height: r.get("height"),
         starred: r.get::<i64, _>("starred") != 0,
+        has_inputs: r.get::<Option<String>, _>("init_path").is_some(),
     }
 }
 
 /// All starred images across every job, newest first — the favorites gallery.
 pub async fn list_favorites(pool: &SqlitePool) -> Result<Vec<ImageMeta>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT id, job_id, idx, seed, width, height, starred FROM images WHERE starred = 1 ORDER BY id DESC",
+        "SELECT id, job_id, idx, seed, width, height, starred, init_path FROM images WHERE starred = 1 ORDER BY id DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -443,9 +499,13 @@ pub async fn insert_image(
     seed: i64,
     width: i64,
     height: i64,
+    // For inpaint results: the init/mask PNGs that produced this image (None for
+    // txt2img). Recorded so the UI can show the exact inputs behind a result.
+    init_path: Option<&str>,
+    mask_path: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO images (job_id, idx, file_path, thumb_path, seed, width, height) VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO images (job_id, idx, file_path, thumb_path, seed, width, height, init_path, mask_path) VALUES (?,?,?,?,?,?,?,?,?)",
     )
     .bind(job_id)
     .bind(idx)
@@ -454,9 +514,29 @@ pub async fn insert_image(
     .bind(seed)
     .bind(width)
     .bind(height)
+    .bind(init_path)
+    .bind(mask_path)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Resolve the recorded init/mask PNG path for one inpaint result image.
+pub async fn image_input_path(
+    pool: &SqlitePool,
+    job_id: i64,
+    idx: i64,
+    mask: bool,
+) -> Result<Option<String>, sqlx::Error> {
+    let col = if mask { "mask_path" } else { "init_path" };
+    let row = sqlx::query(&format!(
+        "SELECT {col} AS p FROM images WHERE job_id = ? AND idx = ?"
+    ))
+    .bind(job_id)
+    .bind(idx)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|r| r.get::<Option<String>, _>("p")))
 }
 
 // ---- Sessions ----

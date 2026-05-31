@@ -28,6 +28,25 @@ pub async fn serve_thumb(
     serve(&state, job_id, idx, true, "image/jpeg", None).await
 }
 
+/// Inline the recorded init/mask PNG behind an inpaint result. `kind` is
+/// "init" or "mask"; anything else is treated as "init".
+pub async fn serve_input(
+    Extension(state): Extension<AppState>,
+    Path((job_id, idx, kind)): Path<(i64, i64, String)>,
+) -> Response {
+    let mask = kind == "mask";
+    let path = match db::image_input_path(&state.pool, job_id, idx, mask).await {
+        Ok(Some(p)) => p,
+        _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
+    };
+    match read_file(&path).await {
+        Some(bytes) => {
+            ([(header::CONTENT_TYPE, "image/png".to_string())], bytes).into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "file missing").into_response(),
+    }
+}
+
 /// Force-download a single full image.
 pub async fn download_image(
     Extension(state): Extension<AppState>,

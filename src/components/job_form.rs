@@ -118,6 +118,7 @@ fn JobForm(initial: JobParams, options: FormOptions) -> impl IntoView {
             hr_scale: hr_scale.get().trim().parse().unwrap_or(2.0),
             hr_second_pass_steps: hr_steps.get().trim().parse().unwrap_or(0),
             denoising_strength: denoise.get().trim().parse().unwrap_or(0.7),
+            inpaint: None,
         };
         create.dispatch((name.get(), p));
     };

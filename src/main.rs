@@ -76,6 +76,7 @@ async fn main() {
         .route("/logout", post(auth::logout))
         .route("/img/{job}/{idx}", get(files::serve_image))
         .route("/thumb/{job}/{idx}", get(files::serve_thumb))
+        .route("/input/{job}/{idx}/{kind}", get(files::serve_input))
         .route("/download/img/{job}/{idx}", get(files::download_image))
         .route("/download/job/{id}", get(files::download_job_zip))
         .leptos_routes_with_context(

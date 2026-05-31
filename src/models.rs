@@ -33,7 +33,76 @@ impl ModelType {
     }
 }
 
-/// Everything needed to run (and to reproduce / template) a txt2img job.
+/// Which kind of inpainting a turn performs. The distinction is purely
+/// client-side: in both cases the browser uploads an init image + a mask, and
+/// the worker runs the same Forge img2img call. `Mask` keeps the base pixels and
+/// only paints a mask; `Sketch` additionally bakes colored strokes into the init
+/// image so the painted colors guide the regenerated region.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InpaintMode {
+    Mask,
+    Sketch,
+}
+
+impl InpaintMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            InpaintMode::Mask => "mask",
+            InpaintMode::Sketch => "sketch",
+        }
+    }
+    pub fn from_str(s: &str) -> InpaintMode {
+        match s {
+            "sketch" => InpaintMode::Sketch,
+            _ => InpaintMode::Mask,
+        }
+    }
+}
+
+/// Inpaint-specific settings. Present (`Some`) on a [`JobParams`] ⇒ the worker
+/// runs Forge img2img instead of txt2img. `init_path`/`mask_path` point at the
+/// current turn's input PNGs on disk — we store paths, never base64, so
+/// `params_json` (read for every job in the queue list) stays small.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InpaintParams {
+    pub mode: InpaintMode,
+    pub denoising_strength: f32,
+    pub mask_blur: u32,
+    /// 0 fill, 1 original, 2 latent noise, 3 latent nothing.
+    pub inpainting_fill: u32,
+    /// "Only masked" when true (inpaint at full res within the masked bbox).
+    pub inpaint_full_res: bool,
+    pub inpaint_full_res_padding: u32,
+    /// 0 = inpaint the masked area, 1 = inpaint everything except the mask.
+    pub mask_invert: u32,
+    /// On-disk PNG paths for the current turn (filled in server-side).
+    pub init_path: String,
+    pub mask_path: String,
+    /// Provenance: the gallery image this inpaint session started from.
+    pub src_job: i64,
+    pub src_idx: i64,
+}
+
+impl Default for InpaintParams {
+    fn default() -> Self {
+        InpaintParams {
+            mode: InpaintMode::Mask,
+            denoising_strength: 0.75,
+            mask_blur: 4,
+            inpainting_fill: 1,
+            inpaint_full_res: true,
+            inpaint_full_res_padding: 32,
+            mask_invert: 0,
+            init_path: String::new(),
+            mask_path: String::new(),
+            src_job: 0,
+            src_idx: 0,
+        }
+    }
+}
+
+/// Everything needed to run (and to reproduce / template) a job. A `None`
+/// `inpaint` is an ordinary txt2img job; `Some` makes it an inpaint job.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JobParams {
     pub model_type: ModelType,
@@ -57,6 +126,17 @@ pub struct JobParams {
     pub hr_scale: f32,
     pub hr_second_pass_steps: u32,
     pub denoising_strength: f32,
+    /// `Some` ⇒ this is an inpaint job (worker runs img2img). Defaulted so old
+    /// `params_json` rows (which lack the field) still deserialize.
+    #[serde(default)]
+    pub inpaint: Option<InpaintParams>,
+}
+
+impl JobParams {
+    /// Whether this job is an inpaint job (vs txt2img).
+    pub fn is_inpaint(&self) -> bool {
+        self.inpaint.is_some()
+    }
 }
 
 impl Default for JobParams {
@@ -82,6 +162,7 @@ impl Default for JobParams {
             hr_scale: 2.0,
             hr_second_pass_steps: 0,
             denoising_strength: 0.7,
+            inpaint: None,
         }
     }
 }
@@ -150,6 +231,9 @@ pub struct ImageMeta {
     /// Whether the user has starred this image. Starred images appear in the
     /// favorites gallery and cannot be deleted until un-starred.
     pub starred: bool,
+    /// For inpaint results: whether the init/mask PNGs that produced this image
+    /// were recorded on disk (and so can be viewed). False for txt2img images.
+    pub has_inputs: bool,
 }
 
 /// Dropdown choices pulled from Forge for the job form.

@@ -6,6 +6,7 @@ use leptos_router::path;
 
 use crate::components::favorites::FavoritesPage;
 use crate::components::gallery::JobDetailPage;
+use crate::components::inpaint::InpaintPage;
 use crate::components::job_form::NewJobPage;
 use crate::components::job_list::JobsPage;
 use crate::components::login::LoginPage;
@@ -44,6 +45,8 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/") view=JobsPage/>
                     <Route path=path!("/new") view=NewJobPage/>
                     <Route path=path!("/job/:id") view=JobDetailPage/>
+                    <Route path=path!("/inpaint/new") view=InpaintPage/>
+                    <Route path=path!("/inpaint/:id") view=InpaintPage/>
                     <Route path=path!("/favorites") view=FavoritesPage/>
                     <Route path=path!("/login") view=LoginPage/>
                 </Routes>

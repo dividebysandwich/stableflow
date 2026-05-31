@@ -1,5 +1,6 @@
 pub mod favorites;
 pub mod gallery;
+pub mod inpaint;
 pub mod job_form;
 pub mod job_list;
 pub mod login;

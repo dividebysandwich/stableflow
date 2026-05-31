@@ -53,10 +53,32 @@ async fn process_job(state: &AppState, id: i64, params: &JobParams) -> Result<()
         .await
         .map_err(|e| e.to_string())?;
 
+    // For inpaint, read + base64-encode this turn's init/mask PNGs once. The
+    // worker treats mask vs sketch identically — the browser already baked the
+    // difference into the init image.
+    let inpaint_inputs = match &params.inpaint {
+        Some(inp) => {
+            let init = tokio::fs::read(&inp.init_path)
+                .await
+                .map_err(|e| format!("read init {}: {e}", inp.init_path))?;
+            let mask = tokio::fs::read(&inp.mask_path)
+                .await
+                .map_err(|e| format!("read mask {}: {e}", inp.mask_path))?;
+            let enc = base64::engine::general_purpose::STANDARD;
+            Some((enc.encode(init), enc.encode(mask)))
+        }
+        None => None,
+    };
+
     // Generate one image per Forge call so each result is persisted (and becomes
     // visible in the UI) the moment it finishes, rather than only at the end of
-    // the whole batch.
-    let total = (params.batch_size.max(1) * params.n_iter.max(1)) as i64;
+    // the whole batch. Inpaint turns produce `batch_size` variations (n_iter is
+    // a txt2img concept).
+    let total = if params.inpaint.is_some() {
+        params.batch_size.max(1) as i64
+    } else {
+        (params.batch_size.max(1) * params.n_iter.max(1)) as i64
+    };
 
     // Append to any existing results, so re-queuing a job adds more images to its
     // gallery rather than replacing them. New indices never reuse an old URL,
@@ -90,16 +112,26 @@ async fn process_job(state: &AppState, id: i64, params: &JobParams) -> Result<()
         let base = i as f32 / total as f32;
         let span = 1.0 / total as f32;
 
-        let gen = state.forge.txt2img(&single);
-        tokio::pin!(gen);
-        let images = loop {
-            tokio::select! {
-                res = &mut gen => break res?,
-                _ = tokio::time::sleep(Duration::from_millis(800)) => {
-                    let p = state.forge.progress().await;
-                    let _ = db::set_progress(&state.pool, id, base + span * p.progress as f32).await;
-                }
+        let images = match (&params.inpaint, &inpaint_inputs) {
+            (Some(inp), Some((init_b64, mask_b64))) => {
+                run_with_progress(
+                    &state,
+                    id,
+                    base,
+                    span,
+                    state.forge.img2img(&single, inp, init_b64, mask_b64),
+                )
+                .await?
             }
+            _ => {
+                run_with_progress(&state, id, base, span, state.forge.txt2img(&single)).await?
+            }
+        };
+
+        // Record the inputs behind inpaint results so the UI can show them.
+        let (init_path, mask_path) = match &params.inpaint {
+            Some(inp) => (Some(inp.init_path.as_str()), Some(inp.mask_path.as_str())),
+            None => (None, None),
         };
 
         for (b64, seed) in images {
@@ -117,6 +149,8 @@ async fn process_job(state: &AppState, id: i64, params: &JobParams) -> Result<()
                 seed,
                 w as i64,
                 h as i64,
+                init_path,
+                mask_path,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -135,6 +169,31 @@ async fn process_job(state: &AppState, id: i64, params: &JobParams) -> Result<()
         tracing::info!("job {id} was canceled during generation");
     }
     Ok(())
+}
+
+/// Drive a single Forge generation future to completion while polling
+/// `/progress` every 800ms and writing a per-run progress fraction
+/// (`base + span * p`). Shared by the txt2img and img2img paths.
+async fn run_with_progress<F>(
+    state: &AppState,
+    id: i64,
+    base: f32,
+    span: f32,
+    gen: F,
+) -> Result<Vec<(String, i64)>, String>
+where
+    F: std::future::Future<Output = Result<Vec<(String, i64)>, String>>,
+{
+    tokio::pin!(gen);
+    loop {
+        tokio::select! {
+            res = &mut gen => break res,
+            _ = tokio::time::sleep(Duration::from_millis(800)) => {
+                let p = state.forge.progress().await;
+                let _ = db::set_progress(&state.pool, id, base + span * p.progress as f32).await;
+            }
+        }
+    }
 }
 
 /// Decode a base64 PNG, write the full-res file, and a JPEG thumbnail.

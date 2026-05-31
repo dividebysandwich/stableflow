@@ -98,6 +98,106 @@ pub async fn create_job(name: String, params: JobParams) -> Result<i64, ServerFn
     Ok(id)
 }
 
+/// Decode the two base64 PNGs and write them into `dir` named by `start_idx`
+/// (so each turn's inputs are retained). Returns their absolute path strings.
+#[cfg(feature = "ssr")]
+async fn write_inputs(
+    dir: &std::path::Path,
+    start_idx: i64,
+    init_b64: &str,
+    mask_b64: &str,
+) -> Result<(String, String), String> {
+    use base64::Engine;
+    let dec = |s: &str| {
+        // Tolerate an optional "data:image/png;base64," prefix.
+        let p = s.split(',').next_back().unwrap_or(s).trim();
+        base64::engine::general_purpose::STANDARD
+            .decode(p)
+            .map_err(|e| format!("base64: {e}"))
+    };
+    let init = dec(init_b64)?;
+    let mask = dec(mask_b64)?;
+    let init_path = dir.join(format!("{start_idx}_init.png"));
+    let mask_path = dir.join(format!("{start_idx}_mask.png"));
+    tokio::fs::write(&init_path, &init)
+        .await
+        .map_err(|e| format!("write init: {e}"))?;
+    tokio::fs::write(&mask_path, &mask)
+        .await
+        .map_err(|e| format!("write mask: {e}"))?;
+    Ok((
+        init_path.to_string_lossy().into_owned(),
+        mask_path.to_string_lossy().into_owned(),
+    ))
+}
+
+/// Start a new inpaint job from the editor's first "Generate". `params.inpaint`
+/// is `Some` with empty paths; we insert the job parked, write the turn-0 input
+/// PNGs, backfill their paths, then queue it. Returns the new job id.
+#[server(name = CreateInpaintJob, prefix = "/api", input = Json)]
+pub async fn create_inpaint_job(
+    name: String,
+    params: JobParams,
+    init_png_b64: String,
+    mask_png_b64: String,
+) -> Result<i64, ServerFnError> {
+    use crate::server::db;
+    // Server-fn params can't be declared `mut`; rebind to mutate locally.
+    let mut params = params;
+    if params.inpaint.is_none() {
+        return Err(err("create_inpaint_job called without inpaint params"));
+    }
+    let st = state();
+    let id = db::insert_job_parked(&st.pool, &name, &params)
+        .await
+        .map_err(err)?;
+    let dir = st.input_dir(id);
+    tokio::fs::create_dir_all(&dir).await.map_err(err)?;
+    let (init_path, mask_path) = write_inputs(&dir, 0, &init_png_b64, &mask_png_b64)
+        .await
+        .map_err(err)?;
+    if let Some(inp) = params.inpaint.as_mut() {
+        inp.init_path = init_path;
+        inp.mask_path = mask_path;
+    }
+    db::set_job_params(&st.pool, id, &params).await.map_err(err)?;
+    // Flip draft -> queued and wake the worker, now that inputs exist.
+    db::requeue_job(&st.pool, id).await.map_err(err)?;
+    st.notify.notify_one();
+    Ok(id)
+}
+
+/// Run another turn on an existing inpaint job: write the new turn's input PNGs,
+/// record the updated params, and re-queue (appends one batch of results).
+#[server(name = RunInpaintTurn, prefix = "/api", input = Json)]
+pub async fn run_inpaint_turn(
+    id: i64,
+    params: JobParams,
+    init_png_b64: String,
+    mask_png_b64: String,
+) -> Result<(), ServerFnError> {
+    use crate::server::db;
+    let mut params = params;
+    if params.inpaint.is_none() {
+        return Err(err("run_inpaint_turn called without inpaint params"));
+    }
+    let st = state();
+    let start_idx = db::next_image_idx(&st.pool, id).await.map_err(err)?;
+    let dir = st.input_dir(id);
+    tokio::fs::create_dir_all(&dir).await.map_err(err)?;
+    let (init_path, mask_path) = write_inputs(&dir, start_idx, &init_png_b64, &mask_png_b64)
+        .await
+        .map_err(err)?;
+    if let Some(inp) = params.inpaint.as_mut() {
+        inp.init_path = init_path;
+        inp.mask_path = mask_path;
+    }
+    db::set_job_params(&st.pool, id, &params).await.map_err(err)?;
+    db::requeue_job(&st.pool, id).await.map_err(err)?;
+    st.notify.notify_one();
+    Ok(())
+}
+
 #[server(name = CancelJob, prefix = "/api", input = Json)]
 pub async fn cancel_job(id: i64) -> Result<(), ServerFnError> {
     use crate::models::JobStatus;
@@ -175,5 +275,6 @@ pub async fn delete_job(id: i64) -> Result<(), ServerFnError> {
     }
     let _ = tokio::fs::remove_dir_all(st.gallery_dir(id)).await;
     let _ = tokio::fs::remove_dir_all(st.thumb_dir(id)).await;
+    let _ = tokio::fs::remove_dir_all(st.input_dir(id)).await;
     Ok(())
 }

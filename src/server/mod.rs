@@ -37,4 +37,9 @@ impl AppState {
     pub fn thumb_dir(&self, job_id: i64) -> PathBuf {
         self.data_dir.join("thumbs").join(job_id.to_string())
     }
+    /// Per-job directory holding the inpaint turn input PNGs (init + mask),
+    /// named by the result index they produced so each turn is retained.
+    pub fn input_dir(&self, job_id: i64) -> PathBuf {
+        self.data_dir.join("inputs").join(job_id.to_string())
+    }
 }
