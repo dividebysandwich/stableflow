@@ -311,7 +311,11 @@ pub fn InpaintPage() -> impl IntoView {
                 <A href="/" attr:class="link-btn">"\u{2190} Back"</A>
             </div>
             <RunningProgressBar/>
-            <Suspense fallback=|| view! { <p class="muted">"Loading\u{2026}"</p> }>
+            // Transition (not Suspense): the editor polls `images` every 3s, and a
+            // Suspense would re-show its fallback on every poll — unmounting and
+            // remounting the editor (restarting the canvas load, stacking intervals).
+            // Transition keeps the editor mounted across those refetches.
+            <Transition fallback=|| view! { <p class="muted">"Loading\u{2026}"</p> }>
                 {move || {
                     let Some(opts) = options.get() else { return ().into_any() };
                     let eid = existing_id.get();
@@ -344,7 +348,7 @@ pub fn InpaintPage() -> impl IntoView {
                     }
                     .into_any()
                 }}
-            </Suspense>
+            </Transition>
         </div>
     }
 }
@@ -598,6 +602,8 @@ fn InpaintEditor(
                     </Show>
                     <button class="link-btn" on:click=do_undo>"Undo"</button>
                     <button class="link-btn" on:click=do_clear>"Clear"</button>
+                    <button class="link-btn" title="Load the original source image as the base"
+                        on:click=move |_| base.set(base0)>"Original"</button>
                 </div>
                 <div class="canvas-wrap">
                     <canvas
