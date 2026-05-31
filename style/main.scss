@@ -241,12 +241,24 @@ table.params td:first-child { color: var(--muted); width: 180px; }
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem;
 }
 .gallery-item.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.gallery-item.starred { border-color: var(--warn); }
+.gallery-item.starred.selected { border-color: var(--accent); }
 .select-box {
     position: absolute; top: 0.5rem; left: 0.5rem; z-index: 2;
     display: flex; padding: 0.25rem; cursor: pointer;
     background: rgba(20, 24, 32, 0.75); border-radius: 6px;
 }
 .select-box input { width: 18px; height: 18px; margin: 0; cursor: pointer; accent-color: var(--accent); }
+/* Star/favorite toggle, mirrored top-right of the select checkbox. */
+.star-btn {
+    position: absolute; top: 0.5rem; right: 0.5rem; z-index: 2;
+    width: 32px; height: 32px; padding: 0; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(20, 24, 32, 0.75); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--muted); font-size: 1.15rem;
+}
+.star-btn:hover { background: rgba(20, 24, 32, 0.9); border-color: var(--warn); color: var(--warn); }
+.star-btn.on { color: var(--warn); border-color: var(--warn); }
 .gallery-item img { width: 100%; height: auto; border-radius: 6px; display: block; }
 .thumb-btn {
     display: block; width: 100%; padding: 0; border: none;
@@ -284,6 +296,15 @@ table.params td:first-child { color: var(--muted); width: 180px; }
 }
 .viewer-close:hover, .viewer-nav:hover { background: var(--accent-2); border-color: var(--accent); }
 .viewer-close { top: 1rem; right: 1rem; width: 44px; height: 44px; font-size: 1.3rem; }
+.viewer-star {
+    position: absolute; z-index: 2; top: 1rem; left: 1rem;
+    width: 44px; height: 44px; font-size: 1.4rem; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; background: rgba(20, 24, 32, 0.7);
+    border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+}
+.viewer-star:hover { background: var(--accent-2); border-color: var(--accent); }
+.viewer-star.on { color: var(--warn); border-color: var(--warn); }
 .viewer-nav { top: 50%; transform: translateY(-50%); width: 48px; height: 64px; font-size: 2rem; }
 .viewer-nav.prev { left: 1rem; }
 .viewer-nav.next { right: 1rem; }

@@ -4,6 +4,7 @@ use leptos_router::components::{Route, Router, Routes, A};
 use leptos_router::hooks::use_location;
 use leptos_router::path;
 
+use crate::components::favorites::FavoritesPage;
 use crate::components::gallery::JobDetailPage;
 use crate::components::job_form::NewJobPage;
 use crate::components::job_list::JobsPage;
@@ -43,6 +44,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/") view=JobsPage/>
                     <Route path=path!("/new") view=NewJobPage/>
                     <Route path=path!("/job/:id") view=JobDetailPage/>
+                    <Route path=path!("/favorites") view=FavoritesPage/>
                     <Route path=path!("/login") view=LoginPage/>
                 </Routes>
             </main>
@@ -81,6 +83,7 @@ fn NavBar() -> impl IntoView {
                 <div class="navlinks" class:open=move || menu_open.get()>
                     <A href="/new" on:click=close attr:class="navlink">"+ New job"</A>
                     <A href="/" on:click=close attr:class="navlink">"Queue & history"</A>
+                    <A href="/favorites" on:click=close attr:class="navlink">"\u{2605} Favorites"</A>
                     <form method="post" action="/logout" class="logout-form">
                         <button type="submit" class="link-btn">"Logout"</button>
                     </form>

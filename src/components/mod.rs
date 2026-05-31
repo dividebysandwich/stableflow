@@ -1,3 +1,4 @@
+pub mod favorites;
 pub mod gallery;
 pub mod job_form;
 pub mod job_list;
@@ -18,5 +19,17 @@ pub fn confirm(message: &str) -> bool {
     {
         let _ = message;
         true
+    }
+}
+
+/// Native browser alert dialog. No-op off the wasm client (see [`confirm`]).
+pub fn alert(message: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = leptos::prelude::window().alert_with_message(message);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = message;
     }
 }

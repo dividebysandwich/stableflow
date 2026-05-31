@@ -37,6 +37,20 @@ pub async fn get_job_images(id: i64) -> Result<Vec<ImageMeta>, ServerFnError> {
         .map_err(err)
 }
 
+#[server(name = ListFavorites, prefix = "/api", input = Json)]
+pub async fn list_favorites() -> Result<Vec<ImageMeta>, ServerFnError> {
+    crate::server::db::list_favorites(&state().pool)
+        .await
+        .map_err(err)
+}
+
+#[server(name = SetStar, prefix = "/api", input = Json)]
+pub async fn set_star(job_id: i64, idx: i64, starred: bool) -> Result<(), ServerFnError> {
+    crate::server::db::set_image_star(&state().pool, job_id, idx, starred)
+        .await
+        .map_err(err)
+}
+
 #[server(name = GetJobParams, prefix = "/api", input = Json)]
 pub async fn get_job_params(id: i64) -> Result<Option<JobParams>, ServerFnError> {
     crate::server::db::get_job_params(&state().pool, id)
@@ -146,6 +160,13 @@ pub async fn delete_images(job_id: i64, idxs: Vec<i64>) -> Result<(), ServerFnEr
 #[server(name = DeleteJob, prefix = "/api", input = Json)]
 pub async fn delete_job(id: i64) -> Result<(), ServerFnError> {
     let st = state();
+    // Refuse while any image in the job is starred — favorites must be
+    // un-starred first, so a whole-job delete can't take them down with it.
+    if crate::server::db::job_starred_count(&st.pool, id).await.map_err(err)? > 0 {
+        return Err(err(
+            "This job has starred images. Un-star them before deleting the job.",
+        ));
+    }
     let paths = crate::server::db::delete_job(&st.pool, id)
         .await
         .map_err(err)?;

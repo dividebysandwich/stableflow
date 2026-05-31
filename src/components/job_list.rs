@@ -131,6 +131,7 @@ fn job_card(
 ) -> impl IntoView {
     let id = job.id;
     let status = job.status;
+    let starred_count = job.starred_count;
     let label = job_label(&job);
     let status_str = status.as_str().to_string();
     // Most-recent images, newest first (already limited to 12 by the query).
@@ -182,6 +183,15 @@ fn job_card(
                 <button
                     class="link-btn danger"
                     on:click=move |_| {
+                        // Mirrors the server-side guard: a job with starred
+                        // images can't be deleted until they're un-starred.
+                        if starred_count > 0 {
+                            crate::components::alert(&format!(
+                                "This job has {starred_count} starred image(s). \
+                                 Un-star them before deleting the job."
+                            ));
+                            return;
+                        }
                         if crate::components::confirm(
                             "Delete this job and all its images? This cannot be undone."
                         ) {

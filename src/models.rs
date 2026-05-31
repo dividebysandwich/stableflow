@@ -128,6 +128,9 @@ pub struct Job {
     pub created_at: String,
     pub updated_at: String,
     pub image_count: i64,
+    /// How many of this job's images are starred. Used to block whole-job
+    /// deletion while favorites remain.
+    pub starred_count: i64,
     /// Actual idx values of the most-recent images (newest first), for the
     /// queue-list thumbnail strip. Real indices — not a 0..count range — so
     /// they stay correct after individual images are deleted (which leaves
@@ -144,6 +147,9 @@ pub struct ImageMeta {
     pub seed: i64,
     pub width: i64,
     pub height: i64,
+    /// Whether the user has starred this image. Starred images appear in the
+    /// favorites gallery and cannot be deleted until un-starred.
+    pub starred: bool,
 }
 
 /// Dropdown choices pulled from Forge for the job form.

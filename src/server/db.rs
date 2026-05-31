@@ -55,6 +55,19 @@ async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Additive migration for existing databases: the favorites flag. New DBs
+    // get it implicitly here too. Guarded by a pragma check so it runs at most
+    // once (ALTER TABLE ADD COLUMN errors if the column already exists).
+    let has_starred = sqlx::query("SELECT 1 FROM pragma_table_info('images') WHERE name = 'starred'")
+        .fetch_optional(pool)
+        .await?
+        .is_some();
+    if !has_starred {
+        sqlx::query("ALTER TABLE images ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await?;
+    }
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS sessions (
@@ -90,6 +103,7 @@ fn row_to_job(row: &SqliteRow) -> Job {
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
         image_count: row.get("image_count"),
+        starred_count: row.get("starred_count"),
         thumb_idxs,
     }
 }
@@ -101,6 +115,7 @@ const JOB_SELECT: &str = r#"
     SELECT j.id, j.name, j.status, j.error, j.progress, j.params_json,
            j.created_at, j.updated_at,
            (SELECT COUNT(*) FROM images i WHERE i.job_id = j.id) AS image_count,
+           (SELECT COUNT(*) FROM images i WHERE i.job_id = j.id AND i.starred = 1) AS starred_count,
            (SELECT group_concat(idx) FROM
                (SELECT idx FROM images WHERE job_id = j.id ORDER BY idx DESC LIMIT 12)
            ) AS thumb_idxs
@@ -157,22 +172,59 @@ pub async fn get_job_images(
     job_id: i64,
 ) -> Result<Vec<ImageMeta>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT id, job_id, idx, seed, width, height FROM images WHERE job_id = ? ORDER BY idx ASC",
+        "SELECT id, job_id, idx, seed, width, height, starred FROM images WHERE job_id = ? ORDER BY idx ASC",
     )
     .bind(job_id)
     .fetch_all(pool)
     .await?;
-    Ok(rows
-        .iter()
-        .map(|r| ImageMeta {
-            id: r.get("id"),
-            job_id: r.get("job_id"),
-            idx: r.get("idx"),
-            seed: r.get("seed"),
-            width: r.get("width"),
-            height: r.get("height"),
-        })
-        .collect())
+    Ok(rows.iter().map(row_to_image).collect())
+}
+
+fn row_to_image(r: &SqliteRow) -> ImageMeta {
+    ImageMeta {
+        id: r.get("id"),
+        job_id: r.get("job_id"),
+        idx: r.get("idx"),
+        seed: r.get("seed"),
+        width: r.get("width"),
+        height: r.get("height"),
+        starred: r.get::<i64, _>("starred") != 0,
+    }
+}
+
+/// All starred images across every job, newest first — the favorites gallery.
+pub async fn list_favorites(pool: &SqlitePool) -> Result<Vec<ImageMeta>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT id, job_id, idx, seed, width, height, starred FROM images WHERE starred = 1 ORDER BY id DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(row_to_image).collect())
+}
+
+/// Set (or clear) the starred flag on a single image.
+pub async fn set_image_star(
+    pool: &SqlitePool,
+    job_id: i64,
+    idx: i64,
+    starred: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE images SET starred = ? WHERE job_id = ? AND idx = ?")
+        .bind(starred as i64)
+        .bind(job_id)
+        .bind(idx)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Count of starred images in a job — used to block whole-job deletion.
+pub async fn job_starred_count(pool: &SqlitePool, job_id: i64) -> Result<i64, sqlx::Error> {
+    let row = sqlx::query("SELECT COUNT(*) AS c FROM images WHERE job_id = ? AND starred = 1")
+        .bind(job_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(row.get::<i64, _>("c"))
 }
 
 /// Resolve the on-disk path for one image (full or thumbnail).
@@ -343,23 +395,27 @@ pub async fn delete_job(pool: &SqlitePool, id: i64) -> Result<Vec<String>, sqlx:
 /// Delete a single image row, returning its on-disk paths so the caller can
 /// remove the files. Other images keep their `idx` (gaps are fine — serving is
 /// by idx lookup, not position), and a later re-queue still appends via
-/// [`next_image_idx`].
+/// [`next_image_idx`]. Starred images are protected: the `starred = 0` guard
+/// makes this a no-op (empty paths) for them even if a caller slips past the
+/// UI checks.
 pub async fn delete_image(
     pool: &SqlitePool,
     job_id: i64,
     idx: i64,
 ) -> Result<Vec<String>, sqlx::Error> {
-    let rows = sqlx::query("SELECT file_path, thumb_path FROM images WHERE job_id = ? AND idx = ?")
-        .bind(job_id)
-        .bind(idx)
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query(
+        "SELECT file_path, thumb_path FROM images WHERE job_id = ? AND idx = ? AND starred = 0",
+    )
+    .bind(job_id)
+    .bind(idx)
+    .fetch_all(pool)
+    .await?;
     let mut paths = Vec::new();
     for r in &rows {
         paths.push(r.get::<String, _>("file_path"));
         paths.push(r.get::<String, _>("thumb_path"));
     }
-    sqlx::query("DELETE FROM images WHERE job_id = ? AND idx = ?")
+    sqlx::query("DELETE FROM images WHERE job_id = ? AND idx = ? AND starred = 0")
         .bind(job_id)
         .bind(idx)
         .execute(pool)

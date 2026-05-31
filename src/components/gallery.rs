@@ -7,8 +7,11 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 
-use crate::api::{delete_image, delete_images, get_job, get_job_images};
+use crate::api::{delete_image, delete_images, get_job, get_job_images, set_star};
 use crate::models::{ImageMeta, Job, JobParams};
+
+/// Action that toggles an image's starred flag: `(job_id, idx, starred)`.
+pub(crate) type StarAction = Action<(i64, i64, bool), Result<(), ServerFnError>>;
 
 #[component]
 pub fn JobDetailPage() -> impl IntoView {
@@ -38,6 +41,10 @@ pub fn JobDetailPage() -> impl IntoView {
         let (job_id, idxs) = input.clone();
         async move { delete_images(job_id, idxs).await }
     });
+    let star: StarAction = Action::new(|input: &(i64, i64, bool)| {
+        let (job_id, idx, starred) = *input;
+        async move { set_star(job_id, idx, starred).await }
+    });
 
     let job = Resource::new(
         move || (job_id.get(), tick.get()),
@@ -51,15 +58,16 @@ pub fn JobDetailPage() -> impl IntoView {
                 tick.get(),
                 del_img.version().get(),
                 del_multi.version().get(),
+                star.version().get(),
             )
         },
         |(id, ..)| async move { get_job_images(id).await.unwrap_or_default() },
     );
 
-    // Always-available view of the image list, plus which image (by stable
-    // idx, not list position) the fullscreen viewer is showing, if any.
-    // Tracking by idx keeps deletion/navigation correct even while a running
-    // job appends new images and shifts list positions underneath us.
+    // Always-available view of the image list, plus which image (by globally
+    // unique `id`, not list position) the fullscreen viewer is showing, if any.
+    // Tracking by id keeps deletion/navigation correct even while a running job
+    // appends new images and shifts list positions underneath us.
     let imgs = Signal::derive(move || images.get().unwrap_or_default());
     let viewer = RwSignal::new(None::<i64>);
 
@@ -69,8 +77,24 @@ pub fn JobDetailPage() -> impl IntoView {
     let select_all = move |_| selected.set(imgs.get().iter().map(|im| im.idx).collect());
     let select_none = move |_| selected.set(HashSet::new());
     let delete_selected = move |_| {
-        let ids: Vec<i64> = selected.get().iter().copied().collect();
+        // Starred images can't be deleted — drop them from the batch so the
+        // confirmation count is honest and nothing silently survives.
+        let starred: HashSet<i64> = imgs
+            .get()
+            .iter()
+            .filter(|m| m.starred)
+            .map(|m| m.idx)
+            .collect();
+        let ids: Vec<i64> = selected
+            .get()
+            .iter()
+            .copied()
+            .filter(|i| !starred.contains(i))
+            .collect();
         if ids.is_empty() {
+            if !selected.get().is_empty() {
+                crate::components::alert("All selected images are starred. Un-star them first.");
+            }
             return;
         }
         if crate::components::confirm(&format!(
@@ -129,8 +153,9 @@ pub fn JobDetailPage() -> impl IntoView {
                             children=move |im| {
                                 let id = job_id.get();
                                 let idx = im.idx;
-                                // Open the fullscreen viewer on this image.
-                                let open = move |_| viewer.set(Some(idx));
+                                let img_id = im.id;
+                                // Open the fullscreen viewer on this image (by id).
+                                let open = move |_| viewer.set(Some(img_id));
                                 let is_sel = move || selected.with(|s| s.contains(&idx));
                                 let toggle = move |_| {
                                     selected.update(|s| {
@@ -139,8 +164,19 @@ pub fn JobDetailPage() -> impl IntoView {
                                         }
                                     });
                                 };
+                                // Read starred live from the list (the keyed For
+                                // won't re-render on a star change), so the badge
+                                // and the disabled delete stay reactive.
+                                let is_starred = move || {
+                                    imgs.with(|v| {
+                                        v.iter().find(|m| m.idx == idx).map(|m| m.starred).unwrap_or(false)
+                                    })
+                                };
+                                let toggle_star = move |_| {
+                                    star.dispatch((id, idx, !is_starred()));
+                                };
                                 view! {
-                                    <div class="gallery-item" class:selected=is_sel>
+                                    <div class="gallery-item" class:selected=is_sel class:starred=is_starred>
                                         <label class="select-box" title="Mark for deletion">
                                             <input
                                                 type="checkbox"
@@ -148,6 +184,14 @@ pub fn JobDetailPage() -> impl IntoView {
                                                 on:change=toggle
                                             />
                                         </label>
+                                        <button
+                                            class="star-btn"
+                                            class:on=is_starred
+                                            title="Star / favorite"
+                                            on:click=toggle_star
+                                        >
+                                            {move || if is_starred() { "\u{2605}" } else { "\u{2606}" }}
+                                        </button>
                                         <button class="thumb-btn" on:click=open>
                                             <img src=format!("/thumb/{id}/{idx}") loading="lazy" alt=""/>
                                         </button>
@@ -157,7 +201,16 @@ pub fn JobDetailPage() -> impl IntoView {
                                                 <a href=format!("/download/img/{id}/{idx}")>"download"</a>
                                                 <button
                                                     class="del-btn"
+                                                    disabled=is_starred
+                                                    title=move || if is_starred() {
+                                                        "Un-star to delete"
+                                                    } else {
+                                                        "Delete this image"
+                                                    }
                                                     on:click=move |_| {
+                                                        if is_starred() {
+                                                            return;
+                                                        }
                                                         if crate::components::confirm(
                                                             "Delete this image? This cannot be undone."
                                                         ) {
@@ -176,7 +229,7 @@ pub fn JobDetailPage() -> impl IntoView {
             </Transition>
 
             <Show when=move || viewer.get().is_some()>
-                <ImageViewer job_id=job_id.get() images=imgs open=viewer delete=del_img/>
+                <ImageViewer images=imgs open=viewer delete=del_img star=star/>
             </Show>
         </div>
     }
@@ -206,13 +259,16 @@ const SWIPE_PX: f64 = 50.0;
 /// Fullscreen image viewer. Desktop: scroll to zoom (toward cursor), drag to
 /// pan, arrow keys to switch, Delete to remove, Escape/backdrop/✕ to close.
 /// Touch: one-finger swipe to switch images, pinch to zoom, drag to pan.
-/// `open` holds the *idx* of the shown image (stable across list changes).
+/// `open` holds the globally-unique `id` of the shown image (stable across
+/// list changes, and unique even when the list spans multiple jobs — as the
+/// favorites gallery does). Each image's URL is derived from its own
+/// `job_id`/`idx`, so the viewer is reusable across jobs.
 #[component]
-fn ImageViewer(
-    job_id: i64,
+pub(crate) fn ImageViewer(
     images: Signal<Vec<ImageMeta>>,
     open: RwSignal<Option<i64>>,
     delete: Action<(i64, i64), Result<(), ServerFnError>>,
+    star: StarAction,
 ) -> impl IntoView {
     let scale = RwSignal::new(1.0_f64);
     let tx = RwSignal::new(0.0_f64);
@@ -256,58 +312,75 @@ fn ImageViewer(
         ty.set(0.0);
         drag.set(None);
     };
+    // The full metadata of the shown image — source of its URL, seed, and
+    // starred state. None briefly if it just vanished (the effect below fixes
+    // up `open` on the next tick).
+    let cur_meta = move || open.get().and_then(|cur| images.get().into_iter().find(|m| m.id == cur));
     // 0-based position of the shown image within the current list.
     let cur_pos = move || {
         open.get()
-            .and_then(|cur| images.get().iter().position(|m| m.idx == cur))
+            .and_then(|cur| images.get().iter().position(|m| m.id == cur))
     };
+    // Remember the last valid position so that if the shown image disappears
+    // (deleted, or un-starred out of the favorites list) we can land on the
+    // image that slid into its place rather than jumping to the start.
+    let last_pos = RwSignal::new(0usize);
+    Effect::new(move |_| {
+        if let Some(p) = cur_pos() {
+            last_pos.set(p);
+        }
+    });
     let go = move |delta: i32| {
         let list = images.get();
         let n = list.len();
         if n == 0 {
             return;
         }
-        let Some(pos) = open.get().and_then(|cur| list.iter().position(|m| m.idx == cur)) else {
+        let Some(pos) = open.get().and_then(|cur| list.iter().position(|m| m.id == cur)) else {
             return;
         };
         let np = (pos as i32 + delta).rem_euclid(n as i32) as usize;
-        open.set(Some(list[np].idx));
+        open.set(Some(list[np].id));
         reset();
     };
     let close = move || open.set(None);
     let del_current = move || {
-        let Some(cur) = open.get() else { return };
+        let Some(meta) = cur_meta() else { return };
+        if meta.starred {
+            crate::components::alert("This image is starred. Un-star it before deleting.");
+            return;
+        }
         if !crate::components::confirm("Delete this image? This cannot be undone.") {
             return;
         }
-        // Advance to a neighbour by *idx* before dispatching, so we never rely
+        // Advance to a neighbour by *id* before dispatching, so we never rely
         // on positional indices (which shift as a running job appends images).
         let list = images.get();
-        if let Some(pos) = list.iter().position(|m| m.idx == cur) {
+        if let Some(pos) = list.iter().position(|m| m.id == meta.id) {
             let next = list
                 .get(pos + 1)
                 .or_else(|| pos.checked_sub(1).and_then(|p| list.get(p)));
-            open.set(next.map(|m| m.idx)); // None (was the only image) → closes
+            open.set(next.map(|m| m.id)); // None (was the only image) → closes
             reset();
         }
-        delete.dispatch((job_id, cur));
+        delete.dispatch((meta.job_id, meta.idx));
+    };
+    let toggle_star = move || {
+        let Some(meta) = cur_meta() else { return };
+        star.dispatch((meta.job_id, meta.idx, !meta.starred));
     };
 
-    // If the shown image vanishes (deleted elsewhere, or not yet in a fresh
-    // fetch), jump to the nearest remaining image by idx — or close if none.
+    // If the shown image vanishes (deleted elsewhere, un-starred out of a
+    // favorites list, or not yet in a fresh fetch), land on the image now at
+    // its old position — or close if the list is empty.
     Effect::new(move |_| {
         let list = images.get();
         let Some(cur) = open.get_untracked() else { return };
         if list.is_empty() {
             open.set(None);
-        } else if !list.iter().any(|m| m.idx == cur) {
-            let next = list
-                .iter()
-                .map(|m| m.idx)
-                .filter(|&i| i > cur)
-                .min()
-                .or_else(|| list.iter().map(|m| m.idx).max());
-            open.set(next);
+        } else if !list.iter().any(|m| m.id == cur) {
+            let pos = last_pos.get_untracked().min(list.len() - 1);
+            open.set(Some(list[pos].id));
             reset();
         }
     });
@@ -353,10 +426,11 @@ fn ImageViewer(
     }
 
     let src = move || {
-        open.get()
-            .map(|idx| format!("/img/{job_id}/{idx}"))
+        cur_meta()
+            .map(|m| format!("/img/{}/{}", m.job_id, m.idx))
             .unwrap_or_default()
     };
+    let is_starred = move || cur_meta().map(|m| m.starred).unwrap_or(false);
     let caption = move || {
         let n = images.get().len();
         cur_pos()
@@ -523,6 +597,14 @@ fn ImageViewer(
                 class="viewer-close"
                 on:click=move |e: ev::MouseEvent| { e.stop_propagation(); close(); }
             >"\u{2715}"</button>
+            <button
+                class="viewer-star"
+                class:on=is_starred
+                title="Star / favorite"
+                on:click=move |e: ev::MouseEvent| { e.stop_propagation(); toggle_star(); }
+            >
+                {move || if is_starred() { "\u{2605}" } else { "\u{2606}" }}
+            </button>
             <button
                 class="viewer-nav prev"
                 on:click=move |e: ev::MouseEvent| { e.stop_propagation(); go(-1); }
