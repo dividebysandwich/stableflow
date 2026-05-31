@@ -248,6 +248,8 @@ mod engine {
         Some((init_b64, mask_b64))
     }
 
+    // Available for gating Generate on a non-empty mask; not currently wired.
+    #[allow(dead_code)]
     pub fn has_strokes(eng: EngineStore) -> bool {
         eng.with_value(|d| d.strokes > 0)
     }
