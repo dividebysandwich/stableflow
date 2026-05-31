@@ -12,10 +12,11 @@ use leptos::ev;
 use leptos::html;
 use leptos::prelude::*;
 use leptos_router::components::A;
-use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
+use leptos_router::hooks::{use_params_map, use_query_map};
 
 use crate::api::{
-    create_inpaint_job, delete_image, get_form_options, get_job, get_job_images, run_inpaint_turn,
+    create_inpaint_job, delete_image, get_form_options, get_job, get_job_images, get_job_params,
+    run_inpaint_turn,
 };
 use crate::components::progress::RunningProgressBar;
 use crate::models::{FormOptions, InpaintMode, InpaintParams, JobParams, ModelType};
@@ -28,6 +29,11 @@ use wasm_bindgen::{closure::Closure, JsCast};
 // so the shared component compiles for SSR.
 // ---------------------------------------------------------------------------
 
+// Client-only: a `LocalStorage` StoredValue holds a `SendWrapper`. Creating one
+// during SSR (multi-threaded) and dropping it on another worker thread panics
+// ("Dropped SendWrapper from a different thread"), so this type and the store
+// exist only on wasm.
+#[cfg(target_arch = "wasm32")]
 type EngineStore = StoredValue<EngineData, LocalStorage>;
 
 #[cfg(target_arch = "wasm32")]
@@ -46,10 +52,6 @@ struct EngineData {
     last: Option<(f64, f64)>,
     strokes: u32,
 }
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Default)]
-struct EngineData;
 
 #[cfg(target_arch = "wasm32")]
 mod engine {
@@ -290,6 +292,17 @@ pub fn InpaintPage() -> impl IntoView {
             }
         },
     );
+    // For a fresh session, prefill prompts/params from the source image's job.
+    let src_params = Resource::new(
+        move || (existing_id.get(), src_job.get()),
+        |(eid, sj)| async move {
+            if eid.is_none() && sj > 0 {
+                get_job_params(sj).await.ok().flatten()
+            } else {
+                None
+            }
+        },
+    );
 
     view! {
         <div class="page">
@@ -300,28 +313,36 @@ pub fn InpaintPage() -> impl IntoView {
             <RunningProgressBar/>
             <Suspense fallback=|| view! { <p class="muted">"Loading\u{2026}"</p> }>
                 {move || {
-                    options.get().map(|opts| {
-                        // job.get() is Some(Option<Job>) once resolved; default None for /inpaint/new.
-                        let existing = job.get().flatten();
-                        let (init_job, base0) = match (&existing, existing_id.get()) {
-                            (Some(j), Some(_)) => {
+                    let Some(opts) = options.get() else { return ().into_any() };
+                    let eid = existing_id.get();
+                    // Build the editor only once the params it needs are loaded, so
+                    // it mounts a single time (no remount churn / duplicate polling).
+                    let (init_job, base0) = if eid.is_some() {
+                        match job.get() {
+                            Some(Some(j)) => {
                                 let p = j.params.clone();
                                 let (sj, si) = p.inpaint.as_ref().map(|i| (i.src_job, i.src_idx)).unwrap_or((j.id, 0));
                                 (p, (sj, si))
                             }
-                            _ => (JobParams::default(), (src_job.get(), src_idx.get())),
-                        };
-                        view! {
-                            <InpaintEditor
-                                options=opts
-                                initial=init_job
-                                existing_id=existing_id.get()
-                                base0=base0
-                                init_mode=init_mode.get()
-                            />
+                            Some(None) => return view! { <p class="error">"Job not found."</p> }.into_any(),
+                            None => return ().into_any(),
                         }
-                        .into_any()
-                    })
+                    } else {
+                        match src_params.get() {
+                            Some(opt) => (opt.unwrap_or_default(), (src_job.get(), src_idx.get())),
+                            None => return ().into_any(),
+                        }
+                    };
+                    view! {
+                        <InpaintEditor
+                            options=opts
+                            initial=init_job
+                            existing_id=eid
+                            base0=base0
+                            init_mode=init_mode.get()
+                        />
+                    }
+                    .into_any()
                 }}
             </Suspense>
         </div>
@@ -378,9 +399,9 @@ fn InpaintEditor(
     let job_id = RwSignal::new(existing_id);
 
     let canvas_ref = NodeRef::<html::Canvas>::new();
+    // The canvas engine store is client-only (see EngineStore note above).
+    #[cfg(target_arch = "wasm32")]
     let eng: EngineStore = StoredValue::new_local(EngineData::default());
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = eng; // only used by the wasm canvas engine
 
     // (Re)load the base image whenever it changes (initial mount + base switch).
     // Client-only: the canvas store is !Send, and effects don't run during SSR.
@@ -429,11 +450,14 @@ fn InpaintEditor(
         async move { run_inpaint_turn(id, p, init_b64, mask_b64).await }
     });
 
-    // After lazy creation, jump to the job's own URL so reloads resume it.
-    let navigate = use_navigate();
+    // After lazy creation, adopt the new job id in place. We deliberately do NOT
+    // navigate to /inpaint/{id}: a route change would remount the editor, restart
+    // the results poll, and make the page visibly churn after the first turn.
     Effect::new(move |_| {
         if let Some(Ok(id)) = create_act.value().get() {
-            navigate(&format!("/inpaint/{id}"), Default::default());
+            if job_id.get_untracked().is_none() {
+                job_id.set(Some(id));
+            }
         }
     });
 

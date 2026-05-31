@@ -329,3 +329,70 @@ table.params td:first-child { color: var(--muted); width: 180px; }
 
 .logout-form { margin: 0; }
 .logout-form .link-btn { font-size: 0.85rem; }
+
+/* ---- Inpainting editor ---- */
+.inpaint {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-areas:
+        "canvas params"
+        "results results";
+    gap: 1rem;
+    align-items: start;
+}
+.inpaint-canvas-pane { grid-area: canvas; display: flex; flex-direction: column; gap: 0.6rem; min-width: 0; }
+.inpaint-params {
+    grid-area: params;
+    display: flex; flex-direction: column; gap: 0.8rem;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.9rem;
+}
+.inpaint-params .form-grid { grid-template-columns: repeat(2, 1fr); }
+.inpaint-results { grid-area: results; }
+
+.brush-bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.9rem;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.5rem 0.7rem;
+}
+.brush-bar .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.brush-bar .seg .link-btn { border: none; border-radius: 0; padding: 0.35rem 0.9rem; }
+.brush-bar .link-btn.on { background: var(--accent-2); color: #fff; }
+.brush-bar .inline { flex-direction: row; align-items: center; gap: 0.4rem; }
+
+.canvas-wrap {
+    display: flex; justify-content: center; align-items: center;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.5rem; overflow: hidden;
+}
+.inpaint-canvas {
+    /* Backing store stays at native resolution; CSS scales it down to fit the
+       screen (pointer mapping accounts for the scale). */
+    max-width: 100%;
+    max-height: 72vh;
+    width: auto;
+    height: auto;
+    touch-action: none;
+    cursor: crosshair;
+    background: repeating-conic-gradient(#202832 0% 25%, #161b22 0% 50%) 50% / 24px 24px;
+}
+
+.result-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.8rem; }
+.result-item { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.result-item .thumb-btn { display: block; width: 100%; padding: 0; border: none; background: none; cursor: pointer; }
+.result-item img { display: block; width: 100%; height: auto; }
+.result-item .gallery-cap { padding: 0.3rem 0.4rem; }
+
+.viewer-inpaint {
+    position: absolute; top: 12px; left: 60px; z-index: 2;
+    width: 40px; height: 40px; font-size: 20px;
+    background: rgba(0,0,0,0.45); color: #fff; border: none; border-radius: 8px; cursor: pointer;
+}
+
+@media (max-width: 900px) {
+    .inpaint {
+        grid-template-columns: 1fr;
+        grid-template-areas: "canvas" "params" "results";
+    }
+    .inpaint-canvas { max-height: 60vh; }
+}
