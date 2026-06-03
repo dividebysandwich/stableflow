@@ -93,7 +93,7 @@ pub async fn download_job_zip(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
-    let zip_bytes = tokio::task::spawn_blocking(move || build_zip(&files)).await;
+    let zip_bytes = tokio::task::spawn_blocking(move || build_zip(job_id, &files)).await;
 
     match zip_bytes {
         Ok(Ok(bytes)) => {
@@ -112,19 +112,46 @@ pub async fn download_job_zip(
     }
 }
 
-fn build_zip(files: &[(i64, String)]) -> Result<Vec<u8>, String> {
+fn build_zip(job_id: i64, files: &[(i64, i64, String)]) -> Result<Vec<u8>, String> {
     let mut cursor = std::io::Cursor::new(Vec::new());
     {
         let mut zip = zip::ZipWriter::new(&mut cursor);
-        let opts: zip::write::FileOptions<'_, ()> =
+        let base_opts: zip::write::FileOptions<'_, ()> =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        for (idx, path) in files {
+        for (idx, seed, path) in files {
+            let meta = std::fs::metadata(path).map_err(|e| format!("stat {path}: {e}"))?;
             let data = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-            zip.start_file(format!("{idx}.png"), opts)
+            // Naming scheme: jobnumber-seed-sequencenumber.ext
+            let ext = std::path::Path::new(path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("png");
+            // Stamp the zip entry with the source file's creation date (fall back to mtime).
+            let mut opts = base_opts;
+            let created = meta.created().or_else(|_| meta.modified());
+            if let Some(dt) = created.ok().and_then(system_time_to_zip) {
+                opts = opts.last_modified_time(dt);
+            }
+            zip.start_file(format!("{job_id}-{seed}-{idx}.{ext}"), opts)
                 .map_err(|e| e.to_string())?;
             zip.write_all(&data).map_err(|e| e.to_string())?;
         }
         zip.finish().map_err(|e| e.to_string())?;
     }
     Ok(cursor.into_inner())
+}
+
+/// Convert a filesystem timestamp into a zip `DateTime` (UTC). Returns `None`
+/// if the time predates the zip epoch (1980) or otherwise can't be represented.
+fn system_time_to_zip(t: std::time::SystemTime) -> Option<zip::DateTime> {
+    let odt = time::OffsetDateTime::from(t).to_offset(time::UtcOffset::UTC);
+    zip::DateTime::from_date_and_time(
+        odt.year() as u16,
+        u8::from(odt.month()),
+        odt.day(),
+        odt.hour(),
+        odt.minute(),
+        odt.second(),
+    )
+    .ok()
 }

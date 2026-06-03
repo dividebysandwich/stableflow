@@ -301,17 +301,25 @@ pub async fn image_path(
     Ok(row.map(|r| r.get::<String, _>("p")))
 }
 
+/// Returns `(idx, seed, file_path)` for each image of a job, ordered by idx.
 pub async fn job_image_files(
     pool: &SqlitePool,
     job_id: i64,
-) -> Result<Vec<(i64, String)>, sqlx::Error> {
-    let rows = sqlx::query("SELECT idx, file_path FROM images WHERE job_id = ? ORDER BY idx ASC")
-        .bind(job_id)
-        .fetch_all(pool)
-        .await?;
+) -> Result<Vec<(i64, i64, String)>, sqlx::Error> {
+    let rows =
+        sqlx::query("SELECT idx, seed, file_path FROM images WHERE job_id = ? ORDER BY idx ASC")
+            .bind(job_id)
+            .fetch_all(pool)
+            .await?;
     Ok(rows
         .iter()
-        .map(|r| (r.get::<i64, _>("idx"), r.get::<String, _>("file_path")))
+        .map(|r| {
+            (
+                r.get::<i64, _>("idx"),
+                r.get::<i64, _>("seed"),
+                r.get::<String, _>("file_path"),
+            )
+        })
         .collect())
 }
 
