@@ -10,7 +10,9 @@ async fn main() {
     use axum::{Extension, Router};
     use leptos::logging::log;
     use leptos::prelude::*;
-    use leptos_axum::{generate_route_list, LeptosRoutes};
+    use leptos_axum::{
+        generate_route_list_with_exclusions_and_ssg_and_context, LeptosRoutes,
+    };
     use tokio::sync::{Notify, RwLock};
 
     use stableflow::app::{shell, App};
@@ -66,7 +68,17 @@ async fn main() {
     tokio::spawn(worker::run(state.clone()));
     state.notify.notify_one();
 
-    let routes = generate_route_list(App);
+    // Provide AppState (and mock request parts) while discovering routes, so the
+    // root-level `current_user`/`auth_status` server-fn resources can run during
+    // route generation without panicking on a missing context.
+    let (routes, _) = generate_route_list_with_exclusions_and_ssg_and_context(
+        App,
+        None,
+        {
+            let state = state.clone();
+            move || provide_context(state.clone())
+        },
+    );
 
     let app = Router::<LeptosOptions>::new()
         .route("/login", post(auth::login))
@@ -88,7 +100,13 @@ async fn main() {
                 move || shell(leptos_options.clone())
             },
         )
-        .fallback(leptos_axum::file_and_error_handler(shell))
+        .fallback(leptos_axum::file_and_error_handler_with_context(
+            {
+                let state = state.clone();
+                move || provide_context(state.clone())
+            },
+            shell,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
