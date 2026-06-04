@@ -57,7 +57,9 @@ pub fn LoginPage() -> impl IntoView {
                     autocomplete="current-password"
                 />
                 <button type="submit">
-                    {move || if needs_setup() { "Create admin" } else { "Log in" }}
+                    <Transition fallback=|| view! { "Log in" }>
+                        {move || if needs_setup() { "Create admin" } else { "Log in" }}
+                    </Transition>
                 </button>
             </form>
         </div>
