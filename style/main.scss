@@ -151,6 +151,25 @@ button:disabled { opacity: 0.6; cursor: default; }
 .running-head .pct { margin-left: auto; color: var(--accent); font-variant-numeric: tabular-nums; }
 .bar-track { height: 8px; background: var(--panel-2); border-radius: 5px; overflow: hidden; }
 .bar-fill { height: 100%; background: var(--run); transition: width 0.4s ease; }
+.running-banner.busy-other { border-color: var(--warn); }
+.running-banner.busy-other .running-head { margin-bottom: 0; flex-wrap: wrap; }
+
+/* ---- Admin / users ---- */
+.badge-admin { color: #cfe0ff; border-color: var(--accent); }
+table.users { border-collapse: collapse; width: 100%; max-width: 760px; }
+table.users th, table.users td {
+    border-bottom: 1px solid var(--border); padding: 0.45rem 0.6rem;
+    text-align: left; vertical-align: middle;
+}
+table.users th { color: var(--muted); font-weight: 600; font-size: 0.85rem; }
+.user-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.add-user {
+    display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--border);
+    padding: 0.9rem; border-radius: 8px; max-width: 760px;
+    input[type="text"], input[type="password"] { padding: 0.5rem; }
+}
+.add-user .admin-check { display: flex; align-items: center; gap: 0.35rem; color: var(--muted); }
 
 /* ---- Job list ---- */
 .job-list { display: flex; flex-direction: column; gap: 0.8rem; }

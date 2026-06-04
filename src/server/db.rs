@@ -3,7 +3,16 @@
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions, SqliteRow};
 use sqlx::Row;
 
-use crate::models::{ImageMeta, Job, JobParams, JobStatus, RunningProgress};
+use crate::models::{ImageMeta, Job, JobParams, JobStatus, RunningProgress, UserInfo};
+
+/// Server-side identity resolved from a session token (joined sessions→users).
+#[derive(Clone, Debug)]
+pub struct UserCtx {
+    pub id: i64,
+    pub username: String,
+    pub is_admin: bool,
+    pub uuid: String,
+}
 
 pub async fn init_pool(db_path: &str) -> Result<SqlitePool, sqlx::Error> {
     let url = format!("sqlite:{db_path}?mode=rwc");
@@ -96,6 +105,48 @@ async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Multi-user: accounts with a per-user UUID (used in file URLs) and an
+    // admin flag. The first user created (on an empty system) becomes admin.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS users (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            username      TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            uuid          TEXT NOT NULL UNIQUE,
+            is_admin      INTEGER NOT NULL DEFAULT 0,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Additive migration: ownership of jobs. NULL for pre-multi-user rows until
+    // claimed by the first admin on bootstrap (see `claim_orphan_jobs`).
+    let has_job_user = sqlx::query("SELECT 1 FROM pragma_table_info('jobs') WHERE name = 'user_id'")
+        .fetch_optional(pool)
+        .await?
+        .is_some();
+    if !has_job_user {
+        sqlx::query("ALTER TABLE jobs ADD COLUMN user_id INTEGER")
+            .execute(pool)
+            .await?;
+    }
+
+    // Additive migration: bind sessions to a user. Pre-existing session rows get
+    // NULL and so stop authenticating (forcing a re-login under the new scheme).
+    let has_sess_user =
+        sqlx::query("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'user_id'")
+            .fetch_optional(pool)
+            .await?
+            .is_some();
+    if !has_sess_user {
+        sqlx::query("ALTER TABLE sessions ADD COLUMN user_id INTEGER")
+            .execute(pool)
+            .await?;
+    }
+
     Ok(())
 }
 
@@ -120,6 +171,7 @@ fn row_to_job(row: &SqliteRow) -> Job {
         updated_at: row.get("updated_at"),
         image_count: row.get("image_count"),
         starred_count: row.get("starred_count"),
+        owner_uuid: row.get::<Option<String>, _>("owner_uuid").unwrap_or_default(),
         thumb_idxs,
     }
 }
@@ -130,25 +182,29 @@ fn row_to_job(row: &SqliteRow) -> Job {
 const JOB_SELECT: &str = r#"
     SELECT j.id, j.name, j.status, j.error, j.progress, j.params_json,
            j.created_at, j.updated_at,
+           u.uuid AS owner_uuid,
            (SELECT COUNT(*) FROM images i WHERE i.job_id = j.id) AS image_count,
            (SELECT COUNT(*) FROM images i WHERE i.job_id = j.id AND i.starred = 1) AS starred_count,
            (SELECT group_concat(idx) FROM
                (SELECT idx FROM images WHERE job_id = j.id ORDER BY idx DESC LIMIT 12)
            ) AS thumb_idxs
     FROM jobs j
+    LEFT JOIN users u ON u.id = j.user_id
 "#;
 
 pub async fn insert_job(
     pool: &SqlitePool,
+    user_id: i64,
     name: &str,
     params: &JobParams,
 ) -> Result<i64, sqlx::Error> {
     let params_json = serde_json::to_string(params).unwrap_or_default();
     let id = sqlx::query(
-        "INSERT INTO jobs (name, status, params_json) VALUES (?, 'queued', ?) RETURNING id",
+        "INSERT INTO jobs (name, status, params_json, user_id) VALUES (?, 'queued', ?, ?) RETURNING id",
     )
     .bind(name)
     .bind(params_json)
+    .bind(user_id)
     .fetch_one(pool)
     .await?
     .get::<i64, _>("id");
@@ -163,15 +219,17 @@ pub async fn insert_job(
 /// so the brief draft window just shows as "queued" in the UI.
 pub async fn insert_job_parked(
     pool: &SqlitePool,
+    user_id: i64,
     name: &str,
     params: &JobParams,
 ) -> Result<i64, sqlx::Error> {
     let params_json = serde_json::to_string(params).unwrap_or_default();
     let id = sqlx::query(
-        "INSERT INTO jobs (name, status, params_json) VALUES (?, 'draft', ?) RETURNING id",
+        "INSERT INTO jobs (name, status, params_json, user_id) VALUES (?, 'draft', ?, ?) RETURNING id",
     )
     .bind(name)
     .bind(params_json)
+    .bind(user_id)
     .fetch_one(pool)
     .await?
     .get::<i64, _>("id");
@@ -194,19 +252,66 @@ pub async fn set_job_params(
     Ok(())
 }
 
-pub async fn list_jobs(pool: &SqlitePool) -> Result<Vec<Job>, sqlx::Error> {
-    let rows = sqlx::query(&format!("{JOB_SELECT} ORDER BY j.id DESC"))
-        .fetch_all(pool)
-        .await?;
+/// Jobs visible to a user: their own, or all of them when `is_admin`.
+pub async fn list_jobs(
+    pool: &SqlitePool,
+    user_id: i64,
+    is_admin: bool,
+) -> Result<Vec<Job>, sqlx::Error> {
+    let rows = if is_admin {
+        sqlx::query(&format!("{JOB_SELECT} ORDER BY j.id DESC"))
+            .fetch_all(pool)
+            .await?
+    } else {
+        sqlx::query(&format!("{JOB_SELECT} WHERE j.user_id = ? ORDER BY j.id DESC"))
+            .bind(user_id)
+            .fetch_all(pool)
+            .await?
+    };
     Ok(rows.iter().map(row_to_job).collect())
 }
 
-pub async fn get_job(pool: &SqlitePool, id: i64) -> Result<Option<Job>, sqlx::Error> {
-    let row = sqlx::query(&format!("{JOB_SELECT} WHERE j.id = ?"))
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+/// A single job, but only if owned by `user_id` (or the caller is an admin).
+pub async fn get_job(
+    pool: &SqlitePool,
+    id: i64,
+    user_id: i64,
+    is_admin: bool,
+) -> Result<Option<Job>, sqlx::Error> {
+    let row = if is_admin {
+        sqlx::query(&format!("{JOB_SELECT} WHERE j.id = ?"))
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+    } else {
+        sqlx::query(&format!("{JOB_SELECT} WHERE j.id = ? AND j.user_id = ?"))
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?
+    };
     Ok(row.as_ref().map(row_to_job))
+}
+
+/// Resolve the owner (id + uuid) of a job, regardless of who is asking. Callers
+/// use this to authorize access before serving files or mutating a job.
+pub async fn job_owner(
+    pool: &SqlitePool,
+    job_id: i64,
+) -> Result<Option<(i64, String)>, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT j.user_id AS uid, u.uuid AS uuid FROM jobs j \
+         LEFT JOIN users u ON u.id = j.user_id WHERE j.id = ?",
+    )
+    .bind(job_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|r| {
+        match (r.get::<Option<i64>, _>("uid"), r.get::<Option<String>, _>("uuid")) {
+            (Some(uid), Some(uuid)) => Some((uid, uuid)),
+            _ => None,
+        }
+    }))
 }
 
 pub async fn get_job_params(
@@ -222,16 +327,20 @@ pub async fn get_job_params(
     }))
 }
 
+// Image rows are joined to their job's owner so every ImageMeta carries the
+// owner uuid needed to build per-user file URLs.
+const IMAGE_SELECT: &str = "SELECT i.id, i.job_id, i.idx, i.seed, i.width, i.height, \
+    i.starred, i.init_path, u.uuid AS owner_uuid \
+    FROM images i LEFT JOIN jobs j ON j.id = i.job_id LEFT JOIN users u ON u.id = j.user_id";
+
 pub async fn get_job_images(
     pool: &SqlitePool,
     job_id: i64,
 ) -> Result<Vec<ImageMeta>, sqlx::Error> {
-    let rows = sqlx::query(
-        "SELECT id, job_id, idx, seed, width, height, starred, init_path FROM images WHERE job_id = ? ORDER BY idx ASC",
-    )
-    .bind(job_id)
-    .fetch_all(pool)
-    .await?;
+    let rows = sqlx::query(&format!("{IMAGE_SELECT} WHERE i.job_id = ? ORDER BY i.idx ASC"))
+        .bind(job_id)
+        .fetch_all(pool)
+        .await?;
     Ok(rows.iter().map(row_to_image).collect())
 }
 
@@ -245,16 +354,29 @@ fn row_to_image(r: &SqliteRow) -> ImageMeta {
         height: r.get("height"),
         starred: r.get::<i64, _>("starred") != 0,
         has_inputs: r.get::<Option<String>, _>("init_path").is_some(),
+        owner_uuid: r.get::<Option<String>, _>("owner_uuid").unwrap_or_default(),
     }
 }
 
-/// All starred images across every job, newest first — the favorites gallery.
-pub async fn list_favorites(pool: &SqlitePool) -> Result<Vec<ImageMeta>, sqlx::Error> {
-    let rows = sqlx::query(
-        "SELECT id, job_id, idx, seed, width, height, starred, init_path FROM images WHERE starred = 1 ORDER BY id DESC",
-    )
-    .fetch_all(pool)
-    .await?;
+/// Starred images visible to a user (their own, or all for an admin), newest
+/// first — the favorites gallery.
+pub async fn list_favorites(
+    pool: &SqlitePool,
+    user_id: i64,
+    is_admin: bool,
+) -> Result<Vec<ImageMeta>, sqlx::Error> {
+    let rows = if is_admin {
+        sqlx::query(&format!("{IMAGE_SELECT} WHERE i.starred = 1 ORDER BY i.id DESC"))
+            .fetch_all(pool)
+            .await?
+    } else {
+        sqlx::query(&format!(
+            "{IMAGE_SELECT} WHERE i.starred = 1 AND j.user_id = ? ORDER BY i.id DESC"
+        ))
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?
+    };
     Ok(rows.iter().map(row_to_image).collect())
 }
 
@@ -396,19 +518,30 @@ pub async fn fail_if_running(pool: &SqlitePool, id: i64, error: &str) -> Result<
     Ok(())
 }
 
-/// Progress of the currently-running job, if any.
-pub async fn running_progress(pool: &SqlitePool) -> Result<RunningProgress, sqlx::Error> {
+/// Progress of the currently-running job, as seen by `user_id`. If the running
+/// job is theirs, full details are returned; if it belongs to someone else,
+/// only `busy_with_other` is set (no name/progress leak); if nothing is running,
+/// the default (idle) is returned.
+pub async fn running_progress(
+    pool: &SqlitePool,
+    user_id: i64,
+) -> Result<RunningProgress, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT id, name, progress FROM jobs WHERE status = 'running' ORDER BY id ASC LIMIT 1",
+        "SELECT id, name, progress, user_id FROM jobs WHERE status = 'running' ORDER BY id ASC LIMIT 1",
     )
     .fetch_optional(pool)
     .await?;
     Ok(match row {
-        Some(r) => RunningProgress {
+        Some(r) if r.get::<Option<i64>, _>("user_id") == Some(user_id) => RunningProgress {
             job_id: Some(r.get("id")),
             job_name: r.get("name"),
             progress: r.get::<f64, _>("progress") as f32,
             eta_seconds: 0.0,
+            busy_with_other: false,
+        },
+        Some(_) => RunningProgress {
+            busy_with_other: true,
+            ..Default::default()
         },
         None => RunningProgress::default(),
     })
@@ -552,11 +685,13 @@ pub async fn image_input_path(
 pub async fn create_session(
     pool: &SqlitePool,
     token: &str,
+    user_id: i64,
     now: i64,
     expires_at: i64,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO sessions (token, created_at, expires_at) VALUES (?,?,?)")
+    sqlx::query("INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?,?,?,?)")
         .bind(token)
+        .bind(user_id)
         .bind(now)
         .bind(expires_at)
         .execute(pool)
@@ -565,14 +700,32 @@ pub async fn create_session(
 }
 
 pub async fn session_valid(pool: &SqlitePool, token: &str, now: i64) -> Result<bool, sqlx::Error> {
-    let row = sqlx::query("SELECT expires_at FROM sessions WHERE token = ?")
-        .bind(token)
-        .fetch_optional(pool)
-        .await?;
-    Ok(match row {
-        Some(r) => r.get::<i64, _>("expires_at") > now,
-        None => false,
-    })
+    Ok(session_user(pool, token, now).await?.is_some())
+}
+
+/// Resolve a session token to its (still-valid) user. Joins sessions→users so a
+/// session whose user was deleted, or which lacks a `user_id`, is treated as
+/// invalid.
+pub async fn session_user(
+    pool: &SqlitePool,
+    token: &str,
+    now: i64,
+) -> Result<Option<UserCtx>, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT u.id, u.username, u.is_admin, u.uuid \
+         FROM sessions s JOIN users u ON u.id = s.user_id \
+         WHERE s.token = ? AND s.expires_at > ?",
+    )
+    .bind(token)
+    .bind(now)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| UserCtx {
+        id: r.get("id"),
+        username: r.get("username"),
+        is_admin: r.get::<i64, _>("is_admin") != 0,
+        uuid: r.get("uuid"),
+    }))
 }
 
 pub async fn delete_session(pool: &SqlitePool, token: &str) -> Result<(), sqlx::Error> {
@@ -581,4 +734,152 @@ pub async fn delete_session(pool: &SqlitePool, token: &str) -> Result<(), sqlx::
         .execute(pool)
         .await?;
     Ok(())
+}
+
+// ---- Users ----
+
+pub async fn count_users(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    let row = sqlx::query("SELECT COUNT(*) AS c FROM users")
+        .fetch_one(pool)
+        .await?;
+    Ok(row.get::<i64, _>("c"))
+}
+
+pub async fn count_admins(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    let row = sqlx::query("SELECT COUNT(*) AS c FROM users WHERE is_admin = 1")
+        .fetch_one(pool)
+        .await?;
+    Ok(row.get::<i64, _>("c"))
+}
+
+pub async fn create_user(
+    pool: &SqlitePool,
+    username: &str,
+    password_hash: &str,
+    uuid: &str,
+    is_admin: bool,
+) -> Result<i64, sqlx::Error> {
+    let id = sqlx::query(
+        "INSERT INTO users (username, password_hash, uuid, is_admin) VALUES (?,?,?,?) RETURNING id",
+    )
+    .bind(username)
+    .bind(password_hash)
+    .bind(uuid)
+    .bind(is_admin as i64)
+    .fetch_one(pool)
+    .await?
+    .get::<i64, _>("id");
+    Ok(id)
+}
+
+/// Returns `(id, password_hash, is_admin)` for password verification on login.
+pub async fn get_user_by_username(
+    pool: &SqlitePool,
+    username: &str,
+) -> Result<Option<(i64, String, bool)>, sqlx::Error> {
+    let row = sqlx::query("SELECT id, password_hash, is_admin FROM users WHERE username = ?")
+        .bind(username)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| {
+        (
+            r.get::<i64, _>("id"),
+            r.get::<String, _>("password_hash"),
+            r.get::<i64, _>("is_admin") != 0,
+        )
+    }))
+}
+
+pub async fn is_user_admin(pool: &SqlitePool, id: i64) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query("SELECT is_admin FROM users WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(matches!(row.map(|r| r.get::<i64, _>("is_admin")), Some(1)))
+}
+
+pub async fn list_users(pool: &SqlitePool) -> Result<Vec<UserInfo>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT u.id, u.username, u.is_admin, u.created_at, \
+         (SELECT COUNT(*) FROM jobs j WHERE j.user_id = u.id) AS job_count \
+         FROM users u ORDER BY u.id ASC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| UserInfo {
+            id: r.get("id"),
+            username: r.get("username"),
+            is_admin: r.get::<i64, _>("is_admin") != 0,
+            created_at: r.get("created_at"),
+            job_count: r.get("job_count"),
+        })
+        .collect())
+}
+
+pub async fn set_user_password(
+    pool: &SqlitePool,
+    id: i64,
+    password_hash: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+        .bind(password_hash)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Delete a user along with all their jobs and images. Returns the on-disk file
+/// paths of those images so the caller can unlink them.
+pub async fn delete_user(pool: &SqlitePool, id: i64) -> Result<Vec<String>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT i.file_path, i.thumb_path FROM images i \
+         JOIN jobs j ON j.id = i.job_id WHERE j.user_id = ?",
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await?;
+    let mut paths = Vec::new();
+    for r in &rows {
+        paths.push(r.get::<String, _>("file_path"));
+        paths.push(r.get::<String, _>("thumb_path"));
+    }
+    sqlx::query("DELETE FROM images WHERE job_id IN (SELECT id FROM jobs WHERE user_id = ?)")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM jobs WHERE user_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM users WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(paths)
+}
+
+/// Job ids belonging to a user — used to clean up their on-disk directories.
+pub async fn user_job_ids(pool: &SqlitePool, id: i64) -> Result<Vec<i64>, sqlx::Error> {
+    let rows = sqlx::query("SELECT id FROM jobs WHERE user_id = ?")
+        .bind(id)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.iter().map(|r| r.get::<i64, _>("id")).collect())
+}
+
+/// Assign every ownerless job (pre-multi-user rows) to `user_id`. Run once when
+/// the first admin is bootstrapped so existing galleries aren't orphaned.
+pub async fn claim_orphan_jobs(pool: &SqlitePool, user_id: i64) -> Result<u64, sqlx::Error> {
+    let res = sqlx::query("UPDATE jobs SET user_id = ? WHERE user_id IS NULL")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
 }

@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod favorites;
 pub mod gallery;
 pub mod inpaint;

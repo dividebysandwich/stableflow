@@ -1,30 +1,70 @@
 //! Raw byte / streaming endpoints: full images, thumbnails, and per-job zips.
+//! Every URL is scoped by the owner's per-user UUID (`/u/{uuid}/...`) and gated:
+//! the request must carry a valid session whose user owns the job (or is an
+//! admin), and the path UUID must match the job owner's UUID.
 
 use std::io::Write;
 
 use axum::extract::{Extension, Path};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum_extra::extract::cookie::CookieJar;
 
-use crate::server::{db, AppState};
+use crate::server::{auth, db, now_unix, AppState};
 
 async fn read_file(path: &str) -> Option<Vec<u8>> {
     tokio::fs::read(path).await.ok()
 }
 
+/// Authorize a file request for `job_id` under `path_uuid`. Returns `Ok` only
+/// when the session user owns the job (or is an admin) AND the path UUID matches
+/// the job owner's UUID. Any failure is reported as a bare 404 so the endpoint
+/// never confirms the existence of another user's job.
+async fn authorize(state: &AppState, jar: &CookieJar, path_uuid: &str, job_id: i64) -> bool {
+    let user = match jar.get(auth::COOKIE_NAME) {
+        Some(c) => db::session_user(&state.pool, c.value(), now_unix())
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let user = match user {
+        Some(u) => u,
+        None => return false,
+    };
+    match db::job_owner(&state.pool, job_id).await {
+        Ok(Some((owner_id, owner_uuid))) => {
+            owner_uuid == path_uuid && (user.id == owner_id || user.is_admin)
+        }
+        _ => false,
+    }
+}
+
+fn not_found() -> Response {
+    (StatusCode::NOT_FOUND, "not found").into_response()
+}
+
 /// Inline full-resolution PNG.
 pub async fn serve_image(
     Extension(state): Extension<AppState>,
-    Path((job_id, idx)): Path<(i64, i64)>,
+    jar: CookieJar,
+    Path((uuid, job_id, idx)): Path<(String, i64, i64)>,
 ) -> Response {
+    if !authorize(&state, &jar, &uuid, job_id).await {
+        return not_found();
+    }
     serve(&state, job_id, idx, false, "image/png", None).await
 }
 
 /// Inline JPEG thumbnail.
 pub async fn serve_thumb(
     Extension(state): Extension<AppState>,
-    Path((job_id, idx)): Path<(i64, i64)>,
+    jar: CookieJar,
+    Path((uuid, job_id, idx)): Path<(String, i64, i64)>,
 ) -> Response {
+    if !authorize(&state, &jar, &uuid, job_id).await {
+        return not_found();
+    }
     serve(&state, job_id, idx, true, "image/jpeg", None).await
 }
 
@@ -32,12 +72,16 @@ pub async fn serve_thumb(
 /// "init" or "mask"; anything else is treated as "init".
 pub async fn serve_input(
     Extension(state): Extension<AppState>,
-    Path((job_id, idx, kind)): Path<(i64, i64, String)>,
+    jar: CookieJar,
+    Path((uuid, job_id, idx, kind)): Path<(String, i64, i64, String)>,
 ) -> Response {
+    if !authorize(&state, &jar, &uuid, job_id).await {
+        return not_found();
+    }
     let mask = kind == "mask";
     let path = match db::image_input_path(&state.pool, job_id, idx, mask).await {
         Ok(Some(p)) => p,
-        _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
+        _ => return not_found(),
     };
     match read_file(&path).await {
         Some(bytes) => {
@@ -50,8 +94,12 @@ pub async fn serve_input(
 /// Force-download a single full image.
 pub async fn download_image(
     Extension(state): Extension<AppState>,
-    Path((job_id, idx)): Path<(i64, i64)>,
+    jar: CookieJar,
+    Path((uuid, job_id, idx)): Path<(String, i64, i64)>,
 ) -> Response {
+    if !authorize(&state, &jar, &uuid, job_id).await {
+        return not_found();
+    }
     let disp = format!("attachment; filename=\"job{job_id}_img{idx}.png\"");
     serve(&state, job_id, idx, false, "image/png", Some(disp)).await
 }
@@ -85,8 +133,12 @@ async fn serve(
 /// Zip of all full-res images for a job.
 pub async fn download_job_zip(
     Extension(state): Extension<AppState>,
-    Path(job_id): Path<i64>,
+    jar: CookieJar,
+    Path((uuid, job_id)): Path<(String, i64)>,
 ) -> Response {
+    if !authorize(&state, &jar, &uuid, job_id).await {
+        return not_found();
+    }
     let files = match db::job_image_files(&state.pool, job_id).await {
         Ok(f) if !f.is_empty() => f,
         Ok(_) => return (StatusCode::NOT_FOUND, "no images for job").into_response(),

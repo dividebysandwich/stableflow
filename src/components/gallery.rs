@@ -154,6 +154,7 @@ pub fn JobDetailPage() -> impl IntoView {
                                 let id = job_id.get();
                                 let idx = im.idx;
                                 let img_id = im.id;
+                                let uuid = im.owner_uuid.clone();
                                 // Open the fullscreen viewer on this image (by id).
                                 let open = move |_| viewer.set(Some(img_id));
                                 let is_sel = move || selected.with(|s| s.contains(&idx));
@@ -193,13 +194,13 @@ pub fn JobDetailPage() -> impl IntoView {
                                             {move || if is_starred() { "\u{2605}" } else { "\u{2606}" }}
                                         </button>
                                         <button class="thumb-btn" on:click=open>
-                                            <img src=format!("/thumb/{id}/{idx}") loading="lazy" alt=""/>
+                                            <img src=format!("/u/{uuid}/thumb/{id}/{idx}") loading="lazy" alt=""/>
                                         </button>
                                         <div class="gallery-cap">
                                             <span class="muted">{format!("seed {}", im.seed)}</span>
                                             <span class="cap-actions">
                                                 <A href=format!("/inpaint/new?src_job={id}&src_idx={idx}")>"inpaint"</A>
-                                                <a href=format!("/download/img/{id}/{idx}")>"download"</a>
+                                                <a href=format!("/u/{uuid}/download/img/{id}/{idx}")>"download"</a>
                                                 <button
                                                     class="del-btn"
                                                     disabled=is_starred
@@ -436,7 +437,7 @@ pub(crate) fn ImageViewer(
 
     let src = move || {
         cur_meta()
-            .map(|m| format!("/img/{}/{}", m.job_id, m.idx))
+            .map(|m| format!("/u/{}/img/{}/{}", m.owner_uuid, m.job_id, m.idx))
             .unwrap_or_default()
     };
     let is_starred = move || cur_meta().map(|m| m.starred).unwrap_or(false);
@@ -646,6 +647,7 @@ fn job_detail(job: Job) -> impl IntoView {
     let status = job.status.as_str().to_string();
     let p: JobParams = job.params.clone();
     let has_images = job.image_count > 0;
+    let uuid = job.owner_uuid.clone();
     let is_inpaint = p.is_inpaint();
     let show_distilled = p.model_type.uses_distilled_cfg();
 
@@ -674,7 +676,7 @@ fn job_detail(job: Job) -> impl IntoView {
 
         <div class="detail-actions">
             <Show when=move || has_images>
-                <a class="btn" href=format!("/download/job/{id}")>"Download all (zip)"</a>
+                <a class="btn" href=format!("/u/{uuid}/download/job/{id}")>"Download all (zip)"</a>
             </Show>
             <Show when=move || is_inpaint>
                 <A href=format!("/inpaint/{id}")>"Continue inpainting"</A>

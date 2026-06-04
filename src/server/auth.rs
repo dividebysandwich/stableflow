@@ -1,7 +1,6 @@
-//! Shared-password login backed by a persistent session table + cookie, plus a
+//! Per-user login backed by a persistent session table + cookie, plus a
 //! middleware that gates every route except the login page and static assets.
-
-use std::time::{SystemTime, UNIX_EPOCH};
+//! On an empty system the first login bootstraps the admin account.
 
 use axum::extract::{Extension, Request, State};
 use axum::middleware::Next;
@@ -10,34 +9,33 @@ use axum::Form;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::Deserialize;
 
-use crate::server::{db, AppState};
+use crate::server::{db, now_unix, AppState};
 
 pub const COOKIE_NAME: &str = "stableflow_session";
 const SESSION_TTL_SECS: i64 = 60 * 60 * 24 * 30; // 30 days
 
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+/// Hash a plaintext password for storage (bcrypt, default cost).
+pub fn hash_password(plain: &str) -> Result<String, String> {
+    bcrypt::hash(plain, bcrypt::DEFAULT_COST).map_err(|e| e.to_string())
+}
+
+/// Verify a plaintext password against a stored bcrypt hash.
+pub fn verify_password(plain: &str, hash: &str) -> bool {
+    bcrypt::verify(plain, hash).unwrap_or(false)
 }
 
 #[derive(Deserialize)]
 pub struct LoginForm {
+    pub username: String,
     pub password: String,
 }
 
-pub async fn login(
-    Extension(state): Extension<AppState>,
-    jar: CookieJar,
-    Form(form): Form<LoginForm>,
-) -> Response {
-    if form.password.is_empty() || form.password != state.password {
-        return Redirect::to("/login?error=1").into_response();
-    }
+/// Set the session cookie for `user_id` and redirect home, or bounce back to the
+/// login page with an error if the session row can't be written.
+async fn establish_session(state: &AppState, jar: CookieJar, user_id: i64) -> Response {
     let token = uuid::Uuid::new_v4().to_string();
-    let now = now();
-    if db::create_session(&state.pool, &token, now, now + SESSION_TTL_SECS)
+    let now = now_unix();
+    if db::create_session(&state.pool, &token, user_id, now, now + SESSION_TTL_SECS)
         .await
         .is_err()
     {
@@ -51,6 +49,45 @@ pub async fn login(
     (jar.add(cookie), Redirect::to("/")).into_response()
 }
 
+pub async fn login(
+    Extension(state): Extension<AppState>,
+    jar: CookieJar,
+    Form(form): Form<LoginForm>,
+) -> Response {
+    let username = form.username.trim();
+    if username.is_empty() || form.password.is_empty() {
+        return Redirect::to("/login?error=1").into_response();
+    }
+
+    // Empty system: this first login creates the admin account and claims any
+    // pre-existing (ownerless) jobs.
+    match db::count_users(&state.pool).await {
+        Ok(0) => {
+            let hash = match hash_password(&form.password) {
+                Ok(h) => h,
+                Err(_) => return Redirect::to("/login?error=1").into_response(),
+            };
+            let uuid = uuid::Uuid::new_v4().to_string();
+            let id = match db::create_user(&state.pool, username, &hash, &uuid, true).await {
+                Ok(id) => id,
+                Err(_) => return Redirect::to("/login?error=1").into_response(),
+            };
+            let _ = db::claim_orphan_jobs(&state.pool, id).await;
+            return establish_session(&state, jar, id).await;
+        }
+        Ok(_) => {}
+        Err(_) => return Redirect::to("/login?error=1").into_response(),
+    }
+
+    // Normal login: verify against the stored bcrypt hash.
+    match db::get_user_by_username(&state.pool, username).await {
+        Ok(Some((id, hash, _is_admin))) if verify_password(&form.password, &hash) => {
+            establish_session(&state, jar, id).await
+        }
+        _ => Redirect::to("/login?error=1").into_response(),
+    }
+}
+
 pub async fn logout(Extension(state): Extension<AppState>, jar: CookieJar) -> Response {
     if let Some(c) = jar.get(COOKIE_NAME) {
         let _ = db::delete_session(&state.pool, c.value()).await;
@@ -61,6 +98,7 @@ pub async fn logout(Extension(state): Extension<AppState>, jar: CookieJar) -> Re
 
 fn is_public(path: &str) -> bool {
     path == "/login"
+        || path == "/api/auth_status"
         || path == "/favicon.ico"
         || path.starts_with("/pkg/")
         || path.starts_with("/assets/")
@@ -79,7 +117,7 @@ pub async fn require_auth(
     }
 
     let authed = match jar.get(COOKIE_NAME) {
-        Some(c) => db::session_valid(&state.pool, c.value(), now())
+        Some(c) => db::session_valid(&state.pool, c.value(), now_unix())
             .await
             .unwrap_or(false),
         None => false,

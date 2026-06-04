@@ -212,6 +212,10 @@ pub struct Job {
     /// How many of this job's images are starred. Used to block whole-job
     /// deletion while favorites remain.
     pub starred_count: i64,
+    /// UUID of the user who owns this job. Used to build per-user (unguessable)
+    /// file URLs (`/u/{owner_uuid}/...`). Empty for jobs with no owner.
+    #[serde(default)]
+    pub owner_uuid: String,
     /// Actual idx values of the most-recent images (newest first), for the
     /// queue-list thumbnail strip. Real indices — not a 0..count range — so
     /// they stay correct after individual images are deleted (which leaves
@@ -234,6 +238,10 @@ pub struct ImageMeta {
     /// For inpaint results: whether the init/mask PNGs that produced this image
     /// were recorded on disk (and so can be viewed). False for txt2img images.
     pub has_inputs: bool,
+    /// UUID of the user who owns the job this image belongs to. Used to build
+    /// per-user (unguessable) file URLs.
+    #[serde(default)]
+    pub owner_uuid: String,
 }
 
 /// Dropdown choices pulled from Forge for the job form.
@@ -253,4 +261,35 @@ pub struct RunningProgress {
     pub job_name: String,
     pub progress: f32,
     pub eta_seconds: f32,
+    /// True when the queue is busy with a job owned by *another* user. The
+    /// requesting user sees a generic "busy" status with no details, since the
+    /// running job isn't theirs.
+    #[serde(default)]
+    pub busy_with_other: bool,
+}
+
+/// A user as shown on the admin page.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UserInfo {
+    pub id: i64,
+    pub username: String,
+    pub is_admin: bool,
+    pub created_at: String,
+    pub job_count: i64,
+}
+
+/// Identity of the currently-authenticated user, for the UI (navbar admin link,
+/// building file URLs for the user's own source images).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CurrentUser {
+    pub username: String,
+    pub is_admin: bool,
+    pub uuid: String,
+}
+
+/// Whether the system has no users yet (so the login page should prompt to
+/// create the first admin instead of logging in).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AuthStatus {
+    pub needs_setup: bool,
 }

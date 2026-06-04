@@ -4,12 +4,20 @@ use leptos_router::components::{Route, Router, Routes, A};
 use leptos_router::hooks::use_location;
 use leptos_router::path;
 
+use crate::api::current_user;
+use crate::components::admin::AdminPage;
 use crate::components::favorites::FavoritesPage;
 use crate::components::gallery::JobDetailPage;
 use crate::components::inpaint::InpaintPage;
 use crate::components::job_form::NewJobPage;
 use crate::components::job_list::JobsPage;
 use crate::components::login::LoginPage;
+use crate::models::CurrentUser;
+
+/// The authenticated user, shared app-wide via context. The resource resolves to
+/// `None` while loading or when unauthenticated (e.g. on the login page).
+#[derive(Clone, Copy)]
+pub struct CurrentUserCtx(pub Resource<Option<CurrentUser>>);
 
 /// HTML document shell used for SSR + hydration.
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -34,6 +42,11 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 pub fn App() -> impl IntoView {
     provide_meta_context();
 
+    // Resolve the current user once and share it via context (navbar admin link,
+    // inpaint source-image URLs).
+    let user = Resource::new(|| (), |_| async move { current_user().await.ok() });
+    provide_context(CurrentUserCtx(user));
+
     view! {
         <Stylesheet id="leptos" href="/pkg/stableflow.css"/>
         <Title text="StableFlow"/>
@@ -48,6 +61,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/inpaint/new") view=InpaintPage/>
                     <Route path=path!("/inpaint/:id") view=InpaintPage/>
                     <Route path=path!("/favorites") view=FavoritesPage/>
+                    <Route path=path!("/admin") view=AdminPage/>
                     <Route path=path!("/login") view=LoginPage/>
                 </Routes>
             </main>
@@ -61,6 +75,14 @@ pub fn App() -> impl IntoView {
 fn NavBar() -> impl IntoView {
     let location = use_location();
     let show = move || location.pathname.get() != "/login";
+
+    let user = expect_context::<CurrentUserCtx>().0;
+    let is_admin = move || {
+        user.get()
+            .flatten()
+            .map(|u| u.is_admin)
+            .unwrap_or(false)
+    };
 
     let (menu_open, set_menu_open) = signal(false);
     let toggle = move |_| set_menu_open.update(|o| *o = !*o);
@@ -87,6 +109,9 @@ fn NavBar() -> impl IntoView {
                     <A href="/new" on:click=close attr:class="navlink">"+ New job"</A>
                     <A href="/" on:click=close attr:class="navlink">"Queue & history"</A>
                     <A href="/favorites" on:click=close attr:class="navlink">"\u{2605} Favorites"</A>
+                    <Show when=is_admin>
+                        <A href="/admin" on:click=close attr:class="navlink">"Admin"</A>
+                    </Show>
                     <form method="post" action="/logout" class="logout-form">
                         <button type="submit" class="link-btn">"Logout"</button>
                     </form>

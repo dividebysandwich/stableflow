@@ -27,6 +27,7 @@ image = { version = "0.25", optional = true }
 base64 = { version = "0.22", optional = true }
 zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
+bcrypt = { version = "0.15", optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 futures = { version = "0.3", optional = true }
@@ -68,6 +69,7 @@ ssr = [
     "dep:base64",
     "dep:zip",
     "dep:uuid",
+    "dep:bcrypt",
     "dep:tracing",
     "dep:tracing-subscriber",
     "dep:futures",

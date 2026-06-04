@@ -411,11 +411,20 @@ fn InpaintEditor(
 
     // (Re)load the base image whenever it changes (initial mount + base switch).
     // Client-only: the canvas store is !Send, and effects don't run during SSR.
+    // The source image is always one of the current user's own gallery images, so
+    // its file URL uses the current user's UUID (resolved from context).
     #[cfg(target_arch = "wasm32")]
-    Effect::new(move |_| {
-        let (j, i) = base.get();
-        engine::load(canvas_ref, eng, format!("/img/{j}/{i}"), native_w, native_h);
-    });
+    {
+        let user = expect_context::<crate::app::CurrentUserCtx>().0;
+        Effect::new(move |_| {
+            let (j, i) = base.get();
+            let uuid = user.get().flatten().map(|u| u.uuid).unwrap_or_default();
+            if uuid.is_empty() {
+                return; // wait until the current user resolves
+            }
+            engine::load(canvas_ref, eng, format!("/u/{uuid}/img/{j}/{i}"), native_w, native_h);
+        });
+    }
 
     // ---- pointer handlers ----
     let on_down = move |e: ev::PointerEvent| {
@@ -756,21 +765,23 @@ fn InpaintEditor(
                             children=move |im| {
                                 let jid = im.job_id;
                                 let idx = im.idx;
+                                let uuid = im.owner_uuid.clone();
+                                let uuid_inputs = uuid.clone();
                                 let use_base = move |_| base.set((jid, idx));
                                 view! {
                                     <div class="result-item">
                                         <button class="thumb-btn" title="Use as base"
                                             on:click=use_base>
-                                            <img src=format!("/thumb/{jid}/{idx}") loading="lazy" alt=""/>
+                                            <img src=format!("/u/{uuid}/thumb/{jid}/{idx}") loading="lazy" alt=""/>
                                         </button>
                                         <div class="gallery-cap">
                                             <span class="muted">{format!("seed {}", im.seed)}</span>
                                             <span class="cap-actions">
                                                 <Show when=move || im.has_inputs>
-                                                    <a href=format!("/input/{jid}/{idx}/mask") target="_blank">"mask"</a>
-                                                    <a href=format!("/input/{jid}/{idx}/init") target="_blank">"init"</a>
+                                                    <a href=format!("/u/{uuid_inputs}/input/{jid}/{idx}/mask") target="_blank">"mask"</a>
+                                                    <a href=format!("/u/{uuid_inputs}/input/{jid}/{idx}/init") target="_blank">"init"</a>
                                                 </Show>
-                                                <a href=format!("/download/img/{jid}/{idx}")>"download"</a>
+                                                <a href=format!("/u/{uuid}/download/img/{jid}/{idx}")>"download"</a>
                                                 <button class="del-btn"
                                                     on:click=move |_| {
                                                         if crate::components::confirm("Delete this image? This cannot be undone.") {

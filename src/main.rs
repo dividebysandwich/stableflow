@@ -32,10 +32,6 @@ async fn main() {
     let forge_url =
         std::env::var("FORGE_URL").unwrap_or_else(|_| "http://127.0.0.1:7860".to_string());
     let data_dir = std::env::var("STABLEFLOW_DATA_DIR").unwrap_or_else(|_| "data".to_string());
-    let password = std::env::var("STABLEFLOW_PASSWORD").unwrap_or_else(|_| {
-        log!("WARNING: STABLEFLOW_PASSWORD not set; using 'changeme'");
-        "changeme".to_string()
-    });
 
     std::fs::create_dir_all(&data_dir).expect("create data dir");
     let db_path = format!("{data_dir}/stableflow.db");
@@ -65,7 +61,6 @@ async fn main() {
         data_dir: PathBuf::from(&data_dir),
         notify: Arc::new(Notify::new()),
         options: Arc::new(RwLock::new(options)),
-        password,
     };
 
     tokio::spawn(worker::run(state.clone()));
@@ -76,11 +71,11 @@ async fn main() {
     let app = Router::<LeptosOptions>::new()
         .route("/login", post(auth::login))
         .route("/logout", post(auth::logout))
-        .route("/img/{job}/{idx}", get(files::serve_image))
-        .route("/thumb/{job}/{idx}", get(files::serve_thumb))
-        .route("/input/{job}/{idx}/{kind}", get(files::serve_input))
-        .route("/download/img/{job}/{idx}", get(files::download_image))
-        .route("/download/job/{id}", get(files::download_job_zip))
+        .route("/u/{uuid}/img/{job}/{idx}", get(files::serve_image))
+        .route("/u/{uuid}/thumb/{job}/{idx}", get(files::serve_thumb))
+        .route("/u/{uuid}/input/{job}/{idx}/{kind}", get(files::serve_input))
+        .route("/u/{uuid}/download/img/{job}/{idx}", get(files::download_image))
+        .route("/u/{uuid}/download/job/{id}", get(files::download_job_zip))
         .leptos_routes_with_context(
             &leptos_options,
             routes,

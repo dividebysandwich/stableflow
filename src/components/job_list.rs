@@ -140,6 +140,8 @@ fn job_card(
     // scrolls the rest, so wide screens fill up while narrow ones stay tidy.
     let thumb_idxs = job.thumb_idxs.clone();
     let has_images = job.image_count > 0;
+    let uuid = job.owner_uuid.clone();
+    let uuid_zip = uuid.clone();
 
     let can_cancel = matches!(status, JobStatus::Queued | JobStatus::Running);
     let can_requeue = matches!(
@@ -162,7 +164,7 @@ fn job_card(
                 <div class="thumb-strip">
                     {thumb_idxs.iter().map(|&idx| view! {
                         <a href=format!("/job/{id}") class="thumb">
-                            <img src=format!("/thumb/{id}/{idx}") loading="lazy" alt=""/>
+                            <img src=format!("/u/{uuid}/thumb/{id}/{idx}") loading="lazy" alt=""/>
                         </a>
                     }).collect_view()}
                 </div>
@@ -172,7 +174,7 @@ fn job_card(
                 <A href=format!("/job/{id}")>"View gallery"</A>
                 <A href=format!("/new?from={id}")>"Reload as template"</A>
                 <Show when=move || has_images>
-                    <a href=format!("/download/job/{id}")>"Download zip"</a>
+                    <a href=format!("/u/{uuid_zip}/download/job/{id}")>"Download zip"</a>
                 </Show>
                 <Show when=move || can_cancel>
                     <button class="link-btn" on:click=move |_| { cancel.dispatch(id); }>"Cancel"</button>

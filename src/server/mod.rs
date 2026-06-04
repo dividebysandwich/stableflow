@@ -27,7 +27,15 @@ pub struct AppState {
     pub notify: Arc<Notify>,
     /// Cached Forge dropdown choices (refreshable).
     pub options: Arc<RwLock<FormOptions>>,
-    pub password: String,
+}
+
+/// Current Unix time in seconds — used for session creation/expiry checks.
+pub fn now_unix() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 impl AppState {

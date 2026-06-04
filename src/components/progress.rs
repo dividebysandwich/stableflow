@@ -48,6 +48,14 @@ pub fn RunningProgressBar() -> impl IntoView {
                                 </div>
                             }.into_any()
                         }
+                        None if rp.busy_with_other => view! {
+                            <div class="running-banner busy-other">
+                                <div class="running-head">
+                                    <strong>"Busy with other jobs"</strong>
+                                    <span class="muted">" \u{2014} the queue is processing another user's request."</span>
+                                </div>
+                            </div>
+                        }.into_any(),
                         None => view! { <div class="idle-banner">"Queue idle \u{2014} no job running."</div> }.into_any(),
                     }
                 })

@@ -57,6 +57,7 @@ pub fn FavoritesPage() -> impl IntoView {
                                 let img_id = im.id;
                                 let job = im.job_id;
                                 let idx = im.idx;
+                                let uuid = im.owner_uuid.clone();
                                 let open = move |_| viewer.set(Some(img_id));
                                 let unstar = move |_| { star.dispatch((job, idx, false)); };
                                 view! {
@@ -67,12 +68,12 @@ pub fn FavoritesPage() -> impl IntoView {
                                             on:click=unstar
                                         >"\u{2605}"</button>
                                         <button class="thumb-btn" on:click=open>
-                                            <img src=format!("/thumb/{job}/{idx}") loading="lazy" alt=""/>
+                                            <img src=format!("/u/{uuid}/thumb/{job}/{idx}") loading="lazy" alt=""/>
                                         </button>
                                         <div class="gallery-cap">
                                             <span class="muted">{format!("seed {}", im.seed)}</span>
                                             <span class="cap-actions">
-                                                <a href=format!("/download/img/{job}/{idx}")>"download"</a>
+                                                <a href=format!("/u/{uuid}/download/img/{job}/{idx}")>"download"</a>
                                                 <A href=format!("/job/{job}")>"job"</A>
                                             </span>
                                         </div>
