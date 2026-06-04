@@ -77,6 +77,16 @@ fn NavBar() -> impl IntoView {
     let show = move || location.pathname.get() != "/login";
 
     let user = expect_context::<CurrentUserCtx>().0;
+    // Whether to show the admin link. It stays `false` for SSR *and* the first
+    // hydration pass so the server and client produce identical DOM (no
+    // hydration mismatch); a client-only effect then fills it in from the
+    // current-user resource, reactively revealing the link for admins.
+    let is_admin = RwSignal::new(false);
+    Effect::new(move |_| {
+        if let Some(Some(u)) = user.get() {
+            is_admin.set(u.is_admin);
+        }
+    });
 
     let (menu_open, set_menu_open) = signal(false);
     let toggle = move |_| set_menu_open.update(|o| *o = !*o);
@@ -103,20 +113,9 @@ fn NavBar() -> impl IntoView {
                     <A href="/new" on:click=close attr:class="navlink">"+ New job"</A>
                     <A href="/" on:click=close attr:class="navlink">"Queue & history"</A>
                     <A href="/favorites" on:click=close attr:class="navlink">"\u{2605} Favorites"</A>
-                    // Read the current-user resource inside a Transition so the
-                    // admin link doesn't cause an SSR/hydration DOM mismatch.
-                    <Transition>
-                        {move || {
-                            let is_admin = user
-                                .get()
-                                .flatten()
-                                .map(|u| u.is_admin)
-                                .unwrap_or(false);
-                            is_admin.then(|| view! {
-                                <A href="/admin" on:click=close attr:class="navlink">"Admin"</A>
-                            })
-                        }}
-                    </Transition>
+                    {move || is_admin.get().then(|| view! {
+                        <A href="/admin" on:click=close attr:class="navlink">"Admin"</A>
+                    })}
                     <form method="post" action="/logout" class="logout-form">
                         <button type="submit" class="link-btn">"Logout"</button>
                     </form>

@@ -9,37 +9,28 @@ pub fn LoginPage() -> impl IntoView {
     let has_error = move || query.read().get("error").is_some();
 
     // On an empty system the first login creates the admin account, so the
-    // copy/labels change accordingly.
+    // copy/labels change accordingly. This is resolved by a client-only effect
+    // (not read in the SSR view tree) so the server and first hydration pass
+    // render identical DOM — avoiding a hydration mismatch — then it updates.
     let status = Resource::new(|| (), |_| async move { auth_status().await });
-    let needs_setup = move || {
-        status
-            .get()
-            .and_then(|r| r.ok())
-            .map(|s| s.needs_setup)
-            .unwrap_or(false)
-    };
+    let needs_setup = RwSignal::new(false);
+    Effect::new(move |_| {
+        if let Some(Ok(s)) = status.get() {
+            needs_setup.set(s.needs_setup);
+        }
+    });
 
     view! {
         <div class="login-wrap">
             <form class="login-card" method="post" action="/login">
                 <h1>"StableFlow"</h1>
-                <Transition>
-                    {move || {
-                        if needs_setup() {
-                            view! {
-                                <p class="muted">
-                                    "No accounts yet \u{2014} create the administrator account."
-                                </p>
-                            }
-                                .into_any()
-                        } else {
-                            view! {
-                                <p class="muted">"Sign in to continue."</p>
-                            }
-                                .into_any()
-                        }
+                <p class="muted">
+                    {move || if needs_setup.get() {
+                        "No accounts yet \u{2014} create the administrator account."
+                    } else {
+                        "Sign in to continue."
                     }}
-                </Transition>
+                </p>
                 <Show when=has_error>
                     <p class="error">"Incorrect username or password."</p>
                 </Show>
@@ -57,9 +48,7 @@ pub fn LoginPage() -> impl IntoView {
                     autocomplete="current-password"
                 />
                 <button type="submit">
-                    <Transition fallback=|| view! { "Log in" }>
-                        {move || if needs_setup() { "Create admin" } else { "Log in" }}
-                    </Transition>
+                    {move || if needs_setup.get() { "Create admin" } else { "Log in" }}
                 </button>
             </form>
         </div>
